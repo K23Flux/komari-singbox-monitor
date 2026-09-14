@@ -1,0 +1,70 @@
+{
+  "name": {
+    "zh-CN": "Sing-box 监控",
+    "en": "Sing-box Monitor"
+  },
+  "short": "sbmonitor",
+  "description": {
+    "zh-CN": "在 Komari 中集中查看多台服务器的 Sing-box 端口、流量、状态和异常日志。",
+    "en": "Monitor Sing-box ports, traffic, status, and warning logs across servers."
+  },
+  "author": "K23Flux",
+  "url": "https://github.com/K23Flux/komari-singbox-monitor",
+  "version": "0.1.0",
+  "komari": ">=1.4.3",
+  "entry": "script.js",
+  "icon": "assets/icon.svg",
+  "permissions": {
+    "node": true,
+    "allowRoutes": true,
+    "timeout": 30,
+    "maxHTTPBodyBytes": 1048576
+  },
+  "configuration": {
+    "type": "managed",
+    "data": [
+      {
+        "key": "timezone_offset",
+        "name": {
+          "zh-CN": "统计时区（UTC 偏移）",
+          "en": "Statistics timezone (UTC offset)"
+        },
+        "type": "number",
+        "default": 8,
+        "help": {
+          "zh-CN": "中国大陆填写 8，用于划分今日和本月流量。",
+          "en": "Used to calculate daily and monthly traffic boundaries."
+        }
+      },
+      {
+        "key": "offline_seconds",
+        "name": {
+          "zh-CN": "离线判定秒数",
+          "en": "Offline threshold in seconds"
+        },
+        "type": "number",
+        "default": 60
+      },
+      {
+        "key": "history_days",
+        "name": {
+          "zh-CN": "分钟历史保留天数",
+          "en": "Minute history retention days"
+        },
+        "type": "number",
+        "default": 30
+      }
+    ]
+  },
+  "pages": [
+    {
+      "file": "admin.html",
+      "title": {
+        "zh-CN": "Sing-box 监控",
+        "en": "Sing-box Monitor"
+      },
+      "icon": "assets/icon.svg",
+      "visibility": "admin"
+    }
+  ]
+}

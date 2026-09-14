@@ -1,0 +1,6 @@
+/dist/
+/plugin/bin/sb-agent-linux-*
+/plugin/bin/checksums.txt
+*.log
+.DS_Store
+komari.local.json

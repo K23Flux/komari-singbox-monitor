@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sing-box 监控</title>
+  <style>
+    :root{color-scheme:light;--bg:#f5f7fb;--card:#fff;--card2:#f8fafc;--text:#172033;--muted:#6b7280;--line:#e5e9f2;--blue:#2563eb;--blue2:#dbeafe;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--shadow:0 8px 30px rgba(22,34,55,.06)}
+    html.dark{color-scheme:dark;--bg:#0e1420;--card:#151e2d;--card2:#101827;--text:#ecf2ff;--muted:#93a0b6;--line:#273349;--blue:#60a5fa;--blue2:#172c50;--shadow:0 10px 35px rgba(0,0,0,.22)}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    button,input{font:inherit}.app{max-width:1420px;margin:auto;padding:26px}.top{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;margin-bottom:22px}.title h1{font-size:25px;line-height:1.2;margin:0 0 7px}.title p{margin:0;color:var(--muted)}
+    .btn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;padding:9px 14px;cursor:pointer;transition:.15s}.btn:hover{transform:translateY(-1px);border-color:#9db7ec}.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:650}.btn.danger{color:var(--red)}.btn.small{padding:5px 9px;border-radius:8px;font-size:12px}
+    .summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:20px}.stat{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:17px 18px;box-shadow:var(--shadow)}.stat .label{color:var(--muted);font-size:13px}.stat .value{font-size:24px;font-weight:720;margin-top:7px;letter-spacing:-.02em}.stat .hint{font-size:12px;color:var(--muted);margin-top:2px}
+    .panel{background:var(--card);border:1px solid var(--line);border-radius:15px;box-shadow:var(--shadow);overflow:hidden;margin-bottom:18px}.panel-head{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--line)}.panel-head h2{font-size:16px;margin:0}.panel-head span{color:var(--muted);font-size:12px}
+    .node{border-bottom:1px solid var(--line)}.node:last-child{border-bottom:0}.node-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px;background:var(--card2)}.node-name{display:flex;align-items:center;gap:10px}.node-name strong{font-size:16px}.meta{font-size:12px;color:var(--muted);margin-top:2px}.dot{width:9px;height:9px;border-radius:50%;background:var(--red);box-shadow:0 0 0 4px rgba(239,68,68,.12)}.dot.online{background:var(--green);box-shadow:0 0 0 4px rgba(16,185,129,.12)}.actions{display:flex;gap:7px;flex-wrap:wrap}
+    .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:800px}th,td{text-align:left;padding:12px 18px;border-bottom:1px solid var(--line);white-space:nowrap}th{font-size:12px;color:var(--muted);font-weight:600;background:var(--card)}tr:last-child td{border-bottom:0}.number{text-align:right}.speed-down{color:var(--blue);font-weight:650}.speed-up{color:var(--green);font-weight:650}.empty{padding:48px 20px;text-align:center;color:var(--muted)}
+    .events{max-height:370px;overflow:auto}.event{display:grid;grid-template-columns:150px 140px 65px 1fr;gap:12px;padding:11px 18px;border-bottom:1px solid var(--line);align-items:start}.event:last-child{border-bottom:0}.badge{display:inline-flex;align-items:center;justify-content:center;border-radius:99px;padding:2px 8px;font-size:11px;font-weight:700;background:rgba(245,158,11,.13);color:var(--orange)}
+    dialog{border:0;padding:0;border-radius:16px;background:var(--card);color:var(--text);box-shadow:0 25px 80px rgba(0,0,0,.3);width:min(620px,calc(100vw - 28px))}dialog::backdrop{background:rgba(6,12,23,.55);backdrop-filter:blur(2px)}.dialog-head{display:flex;justify-content:space-between;align-items:center;padding:17px 20px;border-bottom:1px solid var(--line)}.dialog-head h3{margin:0;font-size:17px}.dialog-body{padding:20px}.dialog-foot{display:flex;justify-content:flex-end;gap:9px;padding:14px 20px;border-top:1px solid var(--line)}
+    label{display:block;font-weight:650;margin-bottom:7px}.input{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card2);color:var(--text);outline:none}.input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.12)}.help{color:var(--muted);font-size:12px;margin-top:7px}.command{background:#0b1220;color:#dbeafe;border-radius:11px;padding:14px;overflow:auto;white-space:pre-wrap;word-break:break-all;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:15px}.success{color:var(--green);font-weight:650;margin:0 0 8px}.toast{position:fixed;right:22px;bottom:22px;background:#111827;color:#fff;padding:11px 15px;border-radius:10px;box-shadow:var(--shadow);opacity:0;transform:translateY(10px);pointer-events:none;transition:.2s}.toast.show{opacity:1;transform:none}.error{padding:15px 18px;background:rgba(239,68,68,.1);color:var(--red);border:1px solid rgba(239,68,68,.25);border-radius:12px;margin-bottom:18px}
+    canvas{width:100%;height:260px;background:var(--card2);border:1px solid var(--line);border-radius:12px}.legend{display:flex;gap:18px;color:var(--muted);font-size:12px;margin:10px 0}.legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+    @media(max-width:900px){.summary{grid-template-columns:repeat(2,1fr)}.event{grid-template-columns:1fr}.event>*{white-space:normal}.app{padding:17px}.top{align-items:center}.title p{display:none}}
+    @media(max-width:520px){.summary{grid-template-columns:1fr}.top{align-items:flex-start}.node-head{align-items:flex-start;flex-direction:column}.actions{width:100%}}
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="top">
+      <div class="title">
+        <h1>Sing-box 监控</h1>
+        <p>端口流量、运行状态与异常日志</p>
+      </div>
+      <button class="btn primary" id="addButton">＋ 添加节点</button>
+    </div>
+
+    <div id="errorBox"></div>
+    <section class="summary" id="summary"></section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>节点与端口</h2><span id="updatedAt">正在加载</span></div>
+      <div id="nodes"><div class="empty">正在读取监控数据……</div></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>异常日志</h2><span>最多显示最近 100 条</span></div>
+      <div class="events" id="events"><div class="empty">暂无异常日志</div></div>
+    </section>
+  </main>
+
+  <dialog id="addDialog">
+    <div class="dialog-head"><h3>添加 Sing-box 节点</h3><button class="btn small" data-close="addDialog">关闭</button></div>
+    <div class="dialog-body">
+      <div id="addForm">
+        <label for="nodeName">节点名称</label>
+        <input class="input" id="nodeName" maxlength="80" placeholder="例如：Tokyo-02">
+        <div class="help">名称由你自己填写，之后可以随时修改。</div>
+      </div>
+      <div id="commandArea" hidden>
+        <p class="success">安装命令已生成，有效期 10 分钟</p>
+        <div class="help">复制下面的命令，以 root 用户在目标服务器执行：</div>
+        <pre class="command" id="installCommand"></pre>
+        <button class="btn primary" id="copyCommand">复制命令</button>
+      </div>
+    </div>
+    <div class="dialog-foot" id="addFoot"><button class="btn primary" id="generateCommand">生成安装命令</button></div>
+  </dialog>
+
+  <dialog id="historyDialog">
+    <div class="dialog-head"><h3 id="historyTitle">流量历史</h3><button class="btn small" data-close="historyDialog">关闭</button></div>
+    <div class="dialog-body">
+      <div class="legend"><span><i style="background:#2563eb"></i>下载</span><span><i style="background:#10b981"></i>上传</span></div>
+      <canvas id="historyCanvas" width="1100" height="360"></canvas>
+      <div class="help" id="historyHelp">显示今天的每分钟速度。</div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const API = "/api/sbmonitor/v1";
+    let dashboard = { nodes: [], events: [], config: { timezoneOffset: 8 } };
+    let loading = false;
+
+    const $ = (selector) => document.querySelector(selector);
+    const escapeHTML = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+    const formatBytes = (value) => {
+      const number = Number(value) || 0;
+      if (number < 1024) return `${Math.round(number)} B`;
+      const units = ["KB","MB","GB","TB","PB"];
+      let amount = number, index = -1;
+      do { amount /= 1024; index++; } while (amount >= 1024 && index < units.length - 1);
+      return `${amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${units[index]}`;
+    };
+    const formatSpeed = (value) => {
+      const bits = (Number(value) || 0) * 8;
+      if (bits >= 1e9) return `${(bits/1e9).toFixed(2)} Gbps`;
+      if (bits >= 1e6) return `${(bits/1e6).toFixed(2)} Mbps`;
+      if (bits >= 1e3) return `${(bits/1e3).toFixed(1)} Kbps`;
+      return `${Math.round(bits)} bps`;
+    };
+    const formatTime = (value) => value ? new Date(value).toLocaleString() : "从未";
+    const shellQuote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
+
+    function toast(message) {
+      const element = $("#toast");
+      element.textContent = message;
+      element.classList.add("show");
+      setTimeout(() => element.classList.remove("show"), 1800);
+    }
+
+    async function request(path, options = {}) {
+      const response = await fetch(API + path, { credentials: "same-origin", ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+      const result = await response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
+      if (!response.ok || result.ok === false) throw new Error(result.error || `HTTP ${response.status}`);
+      return result;
+    }
+
+    function syncTheme() {
+      try {
+        document.documentElement.classList.toggle("dark", window.parent.document.documentElement.classList.contains("dark"));
+        document.documentElement.lang = window.parent.document.documentElement.lang || "zh-CN";
+      } catch (_) {}
+    }
+
+    function renderSummary() {
+      const online = dashboard.nodes.filter((node) => node.online).length;
+      let today = 0, month = 0, downloadRate = 0, uploadRate = 0;
+      dashboard.nodes.forEach((node) => node.ports.forEach((port) => {
+        today += port.today.total; month += port.month.total;
+        downloadRate += port.downloadRate; uploadRate += port.uploadRate;
+      }));
+      $("#summary").innerHTML = [
+        ["在线节点", `${online} / ${dashboard.nodes.length}`, dashboard.nodes.length ? "60 秒未上报判定离线" : "等待添加节点"],
+        ["今日总流量", formatBytes(today), "所有端口合计"],
+        ["本月总流量", formatBytes(month), "按插件统计时区计算"],
+        ["当前总速度", `↓ ${formatSpeed(downloadRate)}`, `↑ ${formatSpeed(uploadRate)}`],
+      ].map(([label,value,hint]) => `<article class="stat"><div class="label">${label}</div><div class="value">${value}</div><div class="hint">${hint}</div></article>`).join("");
+    }
+
+    function renderNodes() {
+      if (!dashboard.nodes.length) {
+        $("#nodes").innerHTML = '<div class="empty">还没有节点。点击右上角“添加节点”，输入名称后生成安装命令。</div>';
+        return;
+      }
+      $("#nodes").innerHTML = dashboard.nodes.map((node) => {
+        const rows = node.ports.length ? node.ports.map((port) => `<tr>
+          <td><strong>${escapeHTML(port.displayName)}</strong><div class="meta">${escapeHTML(port.tag || "无 tag")}</div></td>
+          <td>${port.port}</td><td>${escapeHTML(port.type || "未知")}</td>
+          <td class="number speed-down">${formatSpeed(port.downloadRate)}</td>
+          <td class="number speed-up">${formatSpeed(port.uploadRate)}</td>
+          <td class="number">${formatBytes(port.today.total)}</td>
+          <td class="number">${formatBytes(port.month.total)}</td>
+          <td class="number"><button class="btn small" data-history="${node.id}:${port.port}:${escapeHTML(port.displayName)}">历史</button> <button class="btn small" data-alias="${node.id}:${port.port}:${escapeHTML(port.displayName)}">改名</button></td>
+        </tr>`).join("") : '<tr><td colspan="8" class="empty">尚未发现有效 inbound 端口</td></tr>';
+        return `<section class="node">
+          <div class="node-head">
+            <div class="node-name"><span class="dot ${node.online ? "online" : ""}"></span><div><strong>${escapeHTML(node.name)}</strong><div class="meta">${escapeHTML(node.hostname || "等待首次上报")} · ${escapeHTML(node.singbox.version || "Sing-box 版本未知")} · 最后上报 ${formatTime(node.lastSeen)}</div></div></div>
+            <div class="actions"><button class="btn small" data-rename="${node.id}:${escapeHTML(node.name)}">修改节点名</button><button class="btn small danger" data-delete="${node.id}:${escapeHTML(node.name)}">删除</button></div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>名称</th><th>端口</th><th>协议</th><th class="number">↓ 当前</th><th class="number">↑ 当前</th><th class="number">今日</th><th class="number">本月</th><th class="number">操作</th></tr></thead><tbody>${rows}</tbody></table></div>
+        </section>`;
+      }).join("");
+    }
+
+    function renderEvents() {
+      const names = new Map(dashboard.nodes.map((node) => [node.id, node.name]));
+      $("#events").innerHTML = dashboard.events.length ? dashboard.events.map((event) => `<div class="event"><span>${formatTime(event.time)}</span><strong>${escapeHTML(names.get(event.nodeId) || "已删除节点")}</strong><span><span class="badge">${escapeHTML(event.level)}</span></span><span>${escapeHTML(event.message)}</span></div>`).join("") : '<div class="empty">暂无异常日志</div>';
+    }
+
+    async function refresh() {
+      if (loading) return;
+      loading = true;
+      try {
+        dashboard = await request("/admin/state");
+        $("#errorBox").innerHTML = "";
+        renderSummary(); renderNodes(); renderEvents();
+        $("#updatedAt").textContent = `更新于 ${new Date().toLocaleTimeString()}`;
+      } catch (error) {
+        $("#errorBox").innerHTML = `<div class="error">${escapeHTML(error.message)}。请确认已经登录 Komari 管理后台。</div>`;
+      } finally { loading = false; }
+    }
+
+    $("#addButton").addEventListener("click", () => {
+      $("#nodeName").value = ""; $("#addForm").hidden = false; $("#commandArea").hidden = true; $("#addFoot").hidden = false; $("#addDialog").showModal(); setTimeout(() => $("#nodeName").focus(), 50);
+    });
+    document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $("#" + button.dataset.close).close()));
+    $("#generateCommand").addEventListener("click", async () => {
+      const name = $("#nodeName").value.trim();
+      if (!name) return toast("请先输入节点名称");
+      try {
+        const result = await request("/admin/registration", { method: "POST", body: JSON.stringify({ name }) });
+        const command = `curl -fsSL ${shellQuote(location.origin + API + "/install.sh")} | bash -s -- --server ${shellQuote(location.origin)} --token ${shellQuote(result.token)} --name ${shellQuote(result.name)}`;
+        $("#installCommand").textContent = command; $("#addForm").hidden = true; $("#commandArea").hidden = false; $("#addFoot").hidden = true;
+      } catch (error) { toast(error.message); }
+    });
+    $("#copyCommand").addEventListener("click", async () => { await navigator.clipboard.writeText($("#installCommand").textContent); toast("安装命令已复制"); });
+
+    $("#nodes").addEventListener("click", async (event) => {
+      const target = event.target.closest("button"); if (!target) return;
+      if (target.dataset.rename) {
+        const [nodeId, ...parts] = target.dataset.rename.split(":"); const current = parts.join(":"); const name = prompt("请输入新的节点名称：", current); if (!name) return;
+        try { await request("/admin/node/rename", { method:"POST", body:JSON.stringify({ node_id:nodeId, name }) }); await refresh(); toast("节点名称已修改"); } catch (error) { toast(error.message); }
+      }
+      if (target.dataset.alias) {
+        const [nodeId, port, ...parts] = target.dataset.alias.split(":"); const current = parts.join(":"); const alias = prompt("请输入端口显示名称，留空恢复自动名称：", current); if (alias === null) return;
+        try { await request("/admin/node/alias", { method:"POST", body:JSON.stringify({ node_id:nodeId, port:Number(port), alias }) }); await refresh(); toast("端口名称已修改"); } catch (error) { toast(error.message); }
+      }
+      if (target.dataset.delete) {
+        const [nodeId, ...parts] = target.dataset.delete.split(":"); const name = parts.join(":"); if (!confirm(`确定删除节点“${name}”及其历史数据吗？此操作不能撤销。`)) return;
+        try { await request("/admin/node/delete", { method:"POST", body:JSON.stringify({ node_id:nodeId }) }); await refresh(); toast("节点已删除"); } catch (error) { toast(error.message); }
+      }
+      if (target.dataset.history) {
+        const [nodeId, port, ...parts] = target.dataset.history.split(":"); showHistory(nodeId, Number(port), parts.join(":"));
+      }
+    });
+
+    function todayKey() {
+      const offset = Number(dashboard.config.timezoneOffset) || 0;
+      return new Date(Date.now() + offset * 3600000).toISOString().slice(0,10);
+    }
+    async function showHistory(nodeId, port, name) {
+      $("#historyTitle").textContent = `${name} / ${port} · 今日速度`;
+      $("#historyHelp").textContent = "正在读取……"; $("#historyDialog").showModal();
+      try {
+        const result = await request(`/admin/history?node_id=${encodeURIComponent(nodeId)}&date=${todayKey()}`);
+        const rows = result.points.map((sample) => { const point = (sample.points || []).find((item) => Number(item.port) === port); return point ? { time:new Date(sample.time), down:Number(point.download_rate)||0, up:Number(point.upload_rate)||0 } : null; }).filter(Boolean);
+        drawChart(rows); $("#historyHelp").textContent = rows.length ? `共 ${rows.length} 个分钟采样点，纵轴按最高速度自动缩放。` : "今天还没有历史采样。";
+      } catch (error) { drawChart([]); $("#historyHelp").textContent = error.message; }
+    }
+    function drawChart(rows) {
+      const canvas = $("#historyCanvas"), ctx = canvas.getContext("2d"), w = canvas.width, h = canvas.height, pad = 42;
+      ctx.clearRect(0,0,w,h); const styles = getComputedStyle(document.documentElement); const line = styles.getPropertyValue("--line").trim(), muted = styles.getPropertyValue("--muted").trim();
+      ctx.strokeStyle=line; ctx.lineWidth=1; ctx.fillStyle=muted; ctx.font="22px system-ui";
+      for(let i=0;i<=4;i++){const y=pad+(h-pad*2)*i/4;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-pad,y);ctx.stroke()}
+      if(!rows.length){ctx.textAlign="center";ctx.fillText("暂无数据",w/2,h/2);return}
+      const max=Math.max(1,...rows.flatMap(row=>[row.down,row.up]));
+      const plot=(key,color)=>{ctx.strokeStyle=color;ctx.lineWidth=3;ctx.beginPath();rows.forEach((row,index)=>{const x=pad+(w-pad*2)*(index/Math.max(1,rows.length-1));const y=h-pad-(h-pad*2)*(row[key]/max);index?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke()};
+      plot("down","#2563eb"); plot("up","#10b981"); ctx.fillStyle=muted;ctx.textAlign="left";ctx.fillText(formatSpeed(max),5,pad+7);ctx.fillText("0",16,h-pad+7);
+    }
+
+    syncTheme();
+    try { new MutationObserver(syncTheme).observe(window.parent.document.documentElement,{attributes:true,attributeFilter:["class","lang"]}); } catch (_) {}
+    refresh(); setInterval(refresh,5000);
+  </script>
+</body>
+</html>
