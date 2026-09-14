@@ -22,6 +22,15 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Withdraw superseded prerelease with personal examples
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.1.0 >/dev/null 2>&1; then
+            old_sha="$(gh api repos/K23Flux/komari-singbox-monitor/git/ref/tags/v0.1.0 --jq '.object.sha')"
+            test "$old_sha" = e187e2449b94f2e4efc908edddceff4badaa9626
+            gh release delete v0.1.0 --yes --cleanup-tag
+          fi
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22.x"

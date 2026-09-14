@@ -58,14 +58,14 @@ async function call(method, routePath, body, admin = false, headers = {}) {
   const denied = await call("GET", "/api/sbmonitor/v1/admin/state", undefined, false);
   assert.strictEqual(denied.status, 403);
 
-  const registration = await call("POST", "/api/sbmonitor/v1/admin/registration", { name: "Tokyo-02" }, true);
+  const registration = await call("POST", "/api/sbmonitor/v1/admin/registration", { name: "demo-node-01" }, true);
   assert.strictEqual(registration.status, 200);
   assert(registration.data.token);
 
   const agent = await call("POST", "/api/sbmonitor/v1/agent/register", {
     registration_token: registration.data.token,
-    name: "Tokyo-02",
-    hostname: "jp-test",
+    name: "demo-node-01",
+    hostname: "demo-host",
     arch: "amd64",
     agent_version: "0.1.0",
   });
@@ -80,12 +80,12 @@ async function call(method, routePath, body, admin = false, headers = {}) {
   const firstReport = await call("POST", "/api/sbmonitor/v1/agent/report", {
     node_id: agent.data.node_id,
     timestamp: Math.floor(Date.now() / 1000),
-    hostname: "jp-test",
+    hostname: "demo-host",
     arch: "amd64",
     agent_version: "0.1.0",
     singbox: { running: true, version: "sing-box version 1.13.12" },
-    inbounds: [{ port: 55101, type: "shadowsocks", tag: "ss2022", users: ["LF"] }],
-    counters: [{ port: 55101, upload_total: 1000, download_total: 2000, upload_rate: 100, download_rate: 200 }],
+    inbounds: [{ port: 30001, type: "shadowsocks", tag: "ss2022", users: ["demo-user-a"] }],
+    counters: [{ port: 30001, upload_total: 1000, download_total: 2000, upload_rate: 100, download_rate: 200 }],
   }, false, { authorization: `Bearer ${agent.data.agent_token}` });
   assert.strictEqual(firstReport.status, 200);
 
@@ -93,15 +93,15 @@ async function call(method, routePath, body, admin = false, headers = {}) {
     node_id: agent.data.node_id,
     timestamp: Math.floor(Date.now() / 1000),
     singbox: { running: true, version: "sing-box version 1.13.12" },
-    inbounds: [{ port: 55101, type: "shadowsocks", tag: "ss2022", users: ["LF"] }],
-    counters: [{ port: 55101, upload_total: 1600, download_total: 3000, upload_rate: 120, download_rate: 220 }],
+    inbounds: [{ port: 30001, type: "shadowsocks", tag: "ss2022", users: ["demo-user-a"] }],
+    counters: [{ port: 30001, upload_total: 1600, download_total: 3000, upload_rate: 120, download_rate: 220 }],
     events: ["WARN test timeout"],
   }, false, { authorization: `Bearer ${agent.data.agent_token}` });
 
   const dashboard = await call("GET", "/api/sbmonitor/v1/admin/state", undefined, true);
   assert.strictEqual(dashboard.data.nodes.length, 1);
-  assert.strictEqual(dashboard.data.nodes[0].name, "Tokyo-02");
-  assert.strictEqual(dashboard.data.nodes[0].ports[0].displayName, "LF");
+  assert.strictEqual(dashboard.data.nodes[0].name, "demo-node-01");
+  assert.strictEqual(dashboard.data.nodes[0].ports[0].displayName, "demo-user-a");
   assert.strictEqual(dashboard.data.nodes[0].ports[0].today.total, 1600);
   assert.strictEqual(dashboard.data.events.length, 1);
 
@@ -124,8 +124,8 @@ async function call(method, routePath, body, admin = false, headers = {}) {
   const saved = JSON.parse(fs.readFileSync(path.join(storage, "state.json"), "utf8"));
   const node = saved.nodes[agent.data.node_id];
   node.lastSeen = new Date(Date.now() - 120000).toISOString();
-  node.inbounds = [{port:55101, type:"shadowsocks", tag:"test", users:[]}];
-  node.current = {55101:{port:55101, uploadRate:500, downloadRate:800}};
+  node.inbounds = [{port:30001, type:"shadowsocks", tag:"test", users:[]}];
+  node.current = {30001:{port:30001, uploadRate:500, downloadRate:800}};
   fs.writeFileSync(path.join(storage, "state.json"), JSON.stringify(saved));
   await global.load();
   const offline = await call("GET", "/api/sbmonitor/v1/admin/state", undefined, true);

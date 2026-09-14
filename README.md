@@ -6,7 +6,7 @@
 
 一个面向 [Komari](https://github.com/komari-monitor/komari) 的只读型 Sing-box 集中监控插件。
 
-Komari 继续负责 CPU、内存、磁盘和在线状态；本项目专门展示多台服务器的 Sing-box inbound、端口流量、实时速度、运行状态与异常日志。节点名称由你添加时自行填写，Agent 可通用于任意符合要求的服务器，不与 Hytron、Nobrand 等固定名称绑定。
+Komari 继续负责 CPU、内存、磁盘和在线状态；本项目专门展示多台服务器的 Sing-box inbound、端口流量、实时速度、运行状态与异常日志。节点名称由你添加时自行填写，Agent 可通用于任意符合要求的服务器，不与任何固定服务器名称绑定。
 
 > [!IMPORTANT]
 > 项目处于早期开发阶段。首次部署前请阅读“统计口径”和“安全边界”，并先在非关键服务器验证。

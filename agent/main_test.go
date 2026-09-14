@@ -19,15 +19,15 @@ func TestParseSingboxConfigDoesNotExposeSecrets(t *testing.T) {
     {
       "type": "shadowsocks",
       "tag": "ss2022",
-      "listen_port": 55101,
+      "listen_port": 30001,
       "password": "main-secret",
-      "users": [{"name":"LF","password":"user-secret"}]
+      "users": [{"name":"demo-user-a","password":"user-secret"}]
     },
     {
       "type": "vless",
       "tag": "vless-in",
-      "listen_port": 56679,
-      "users": [{"name":"wujunjie","uuid":"secret-uuid"}]
+      "listen_port": 30002,
+      "users": [{"name":"demo-user-b","uuid":"secret-uuid"}]
     }
   ]
 }`
@@ -41,10 +41,10 @@ func TestParseSingboxConfigDoesNotExposeSecrets(t *testing.T) {
 	if len(inbounds) != 2 {
 		t.Fatalf("expected 2 inbounds, got %d", len(inbounds))
 	}
-	if inbounds[0].Port != 55101 || inbounds[0].Users[0] != "LF" {
+	if inbounds[0].Port != 30001 || inbounds[0].Users[0] != "demo-user-a" {
 		t.Fatalf("unexpected inbound: %#v", inbounds[0])
 	}
-	if inbounds[1].Port != 56679 || inbounds[1].Users[0] != "wujunjie" {
+	if inbounds[1].Port != 30002 || inbounds[1].Users[0] != "demo-user-b" {
 		t.Fatalf("unexpected inbound: %#v", inbounds[1])
 	}
 	encoded, err := json.Marshal(inbounds)
@@ -83,13 +83,13 @@ func TestAdvanceDirectionHandlesCounterReset(t *testing.T) {
 func TestUpdateTrafficCombinesTCPAndUDP(t *testing.T) {
 	state := AgentState{Ports: map[string]PortState{}, LastSample: time.Unix(100, 0)}
 	raw := map[string]uint64{
-		"sbm:upload:tcp:55101":   1000,
-		"sbm:upload:udp:55101":   500,
-		"sbm:download:tcp:55101": 2000,
-		"sbm:download:udp:55101": 250,
+		"sbm:upload:tcp:30001":   1000,
+		"sbm:upload:udp:30001":   500,
+		"sbm:download:tcp:30001": 2000,
+		"sbm:download:udp:30001": 250,
 	}
 	updateTraffic(&state, raw, time.Unix(110, 0))
-	value := state.Ports["55101"]
+	value := state.Ports["30001"]
 	if value.Upload.Total != 1500 || value.Download.Total != 2250 {
 		t.Fatalf("unexpected totals: %#v", value)
 	}

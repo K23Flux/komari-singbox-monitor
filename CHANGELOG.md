@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-14
+
+- Replace personal examples with fictional demo data and generic contributor attribution.
+- Withdraw the superseded prerelease package. Repository history is not rewritten.
+
 ### Fixed before first release
 
 - 校验文件改为相对文件名，下载后可直接验证。
