@@ -374,7 +374,7 @@ function adminState(req, res) {
   const nodes = Object.values(state.nodes).map(publicNode).sort((a, b) => a.name.localeCompare(b.name));
   sendJSON(res, {
     ok: true,
-    version: "0.1.0",
+    version: "0.1.1",
     config,
     nodes,
     events: state.events.slice(-100).reverse().map(({ hash, ...event }) => event),
@@ -520,7 +520,7 @@ globalThis.load = async function load() {
   server.route("GET", `${API}/admin/history`, history);
   server.cron("@every 1m", appendHistory);
   server.cron("0 17 3 * * *", cleanupHistory);
-  console.log("Sing-box Monitor 0.1.0 已启动");
+  console.log("Sing-box Monitor 0.1.1 已启动");
 };
 
 globalThis.unload = function unload() {
