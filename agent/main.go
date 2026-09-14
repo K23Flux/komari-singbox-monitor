@@ -119,7 +119,12 @@ type apiResponse struct {
 	Error string `json:"error"`
 }
 
-var httpClient = &http.Client{Timeout: 15 * time.Second}
+var httpClient = &http.Client{
+	Timeout: 15 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return errors.New("redirect refused: configure the final HTTPS endpoint")
+	},
+}
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
@@ -157,6 +162,11 @@ func usage() {
 }
 
 func initConfig(args []string) error {
+	if _, err := os.Stat(configFile); err == nil {
+		return errors.New("Agent 配置已存在；升级请使用安装脚本 --update，不覆盖节点身份")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
 	serverURL := flags.String("server", "", "Komari server URL")
 	token := flags.String("token", "", "one-time registration token")
@@ -215,7 +225,10 @@ func runAgent() error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	state, _ := loadAgentState()
+	state, err := loadAgentState()
+	if err != nil {
+		return fmt.Errorf("累计状态损坏，请先备份检查，不自动清零: %w", err)
+	}
 	lastSave := time.Time{}
 	log.Printf("已连接节点 %s，固定配置路径 %s", cfg.Name, cfg.ConfigPath)
 
@@ -248,7 +261,10 @@ func runOnce() error {
 	if err := ensureRegistered(&cfg); err != nil {
 		return err
 	}
-	state, _ := loadAgentState()
+	state, err := loadAgentState()
+	if err != nil {
+		return err
+	}
 	if err := collectAndReport(&cfg, &state); err != nil {
 		return err
 	}
@@ -346,7 +362,6 @@ func collectAndReport(cfg *Config, state *AgentState) error {
 	events := []string{}
 	if state.LastLogUnix == 0 || now.Unix()-state.LastLogUnix >= 30 {
 		events = collectWarningLogs(cfg.ServiceName, state.LastLogUnix)
-		state.LastLogUnix = now.Unix() - 1
 	}
 
 	hostname, _ := os.Hostname()
@@ -370,6 +385,9 @@ func collectAndReport(cfg *Config, state *AgentState) error {
 	}
 	if !response.OK {
 		return errors.New(response.Error)
+	}
+	if state.LastLogUnix == 0 || now.Unix()-state.LastLogUnix >= 30 {
+		state.LastLogUnix = now.Unix() - 1
 	}
 	return nil
 }
@@ -433,8 +451,11 @@ func hashPorts(ports []int) string {
 }
 
 func rebuildNft(ports []int) error {
-	_ = exec.Command("nft", "delete", "table", "inet", nftTable).Run()
 	var rules strings.Builder
+	// Delete and replace in one nft transaction: failure leaves existing rules intact.
+	if exec.Command("nft", "list", "table", "inet", nftTable).Run() == nil {
+		rules.WriteString("delete table inet " + nftTable + "\n")
+	}
 	rules.WriteString("table inet " + nftTable + " {\n")
 	rules.WriteString(" chain input { type filter hook input priority filter; policy accept;\n")
 	for _, port := range ports {
@@ -612,7 +633,7 @@ func collectWarningLogs(service string, sinceUnix int64) []string {
 	if sinceUnix <= 0 {
 		sinceUnix = time.Now().Add(-30 * time.Second).Unix()
 	}
-	args := []string{"-u", service, "--since", "@" + strconv.FormatInt(sinceUnix, 10), "-p", "warning", "--no-pager", "-n", "50", "-o", "short-iso"}
+	args := []string{"-u", service, "--since", "@" + strconv.FormatInt(sinceUnix, 10), "--no-pager", "-n", "200", "-o", "short-iso"}
 	output, err := exec.Command("journalctl", args...).CombinedOutput()
 	if err != nil {
 		return nil
@@ -622,6 +643,10 @@ func collectWarningLogs(service string, sinceUnix int64) []string {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "-- No entries --") {
+			continue
+		}
+		upper := strings.ToUpper(line)
+		if !strings.Contains(upper, "WARN") && !strings.Contains(upper, "ERROR") && !strings.Contains(upper, "FATAL") && !strings.Contains(upper, "PANIC") {
 			continue
 		}
 		if len(line) > 2000 {

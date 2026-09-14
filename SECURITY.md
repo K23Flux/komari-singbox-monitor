@@ -16,3 +16,5 @@
 - 主控不会向 Agent 下发 Shell 命令，也不会修改或重启 Sing-box。
 - 插件仅申请 Node 兼容模块和 HTTP 路由权限。
 - nftables 规则仅计数，不执行放行、拦截、NAT、标记或限速。
+
+注意：配置字段白名单不等于日志脱敏。日志原文可能含敏感信息，仅管理员可见；公开 Issue 前必须自行审查。公网使用有效 HTTPS，当前 Agent 拒绝 HTTP 重定向以避免注册密钥被转发。Agent 需要 root/nftables 权限，安装前请审查脚本。

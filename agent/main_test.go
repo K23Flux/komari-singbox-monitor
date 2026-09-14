@@ -1,10 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+	"strings"
 )
 
 func TestParseSingboxConfigDoesNotExposeSecrets(t *testing.T) {
@@ -42,6 +46,25 @@ func TestParseSingboxConfigDoesNotExposeSecrets(t *testing.T) {
 	}
 	if inbounds[1].Port != 56679 || inbounds[1].Users[0] != "wujunjie" {
 		t.Fatalf("unexpected inbound: %#v", inbounds[1])
+	}
+	encoded, err := json.Marshal(inbounds)
+	if err != nil { t.Fatal(err) }
+	for _, secret := range []string{"main-secret", "user-secret", "secret-uuid"} {
+		if strings.Contains(string(encoded), secret) { t.Fatal("secret leaked in report") }
+	}
+}
+
+func TestPostJSONRefusesRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("redirect target must never receive credentials")
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+	if err := postJSON(source.URL, "test-token", map[string]string{"registration_token":"test"}, nil); err == nil {
+		t.Fatal("expected redirect rejection")
 	}
 }
 

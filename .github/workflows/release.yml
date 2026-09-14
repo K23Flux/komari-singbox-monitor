@@ -1,30 +1,59 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths: [.github/workflows/release.yml]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
+    if: github.repository == 'K23Flux/komari-singbox-monitor'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22.x"
+          cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Verify tag matches manifest
+      - name: Read and validate version
+        id: version
+        shell: bash
         run: |
           version="$(node -p "require('./plugin/komari-plugin.json').version")"
-          test "${GITHUB_REF_NAME}" = "v${version}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
       - name: Test and build
-        run: make test && make build
-      - uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: dist/*
+        run: bash build.sh
+      - name: Verify downloadable checksum
+        working-directory: dist
+        run: sha256sum -c *.sha256
+      - name: Publish only a new version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to overwrite assets."
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" dist/*.zip dist/*.sha256 \
+            --target "$GITHUB_SHA" --title "Sing-box Monitor $RELEASE_TAG" \
+            --notes "首个测试版本。支持通用节点命名、端口流量和服务状态。自动构建通过不等同于真实 Komari 主机验收，请先在测试机器部署。" \
+            --prerelease

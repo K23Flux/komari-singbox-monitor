@@ -105,8 +105,38 @@ async function call(method, routePath, body, admin = false, headers = {}) {
   assert.strictEqual(dashboard.data.nodes[0].ports[0].today.total, 1600);
   assert.strictEqual(dashboard.data.events.length, 1);
 
+  for (const invalid of [null, [], "text", 123]) {
+    const result = await call("POST", "/api/sbmonitor/v1/admin/registration", invalid, true);
+    assert.strictEqual(result.status, 400, "non-object JSON must be rejected");
+  }
+  const crossSite = await call("POST", "/api/sbmonitor/v1/admin/registration", {name:"bad"}, true, {"sec-fetch-site":["cross-site"]});
+  assert.strictEqual(crossSite.status, 403);
+  const forged = await call("POST", "/api/sbmonitor/v1/agent/report", {node_id:agent.data.node_id}, false, {authorization:"Bearer invalid"});
+  assert.strictEqual(forged.status, 401);
+  const unusual = await call("POST", "/api/sbmonitor/v1/agent/report", {
+    node_id: agent.data.node_id, timestamp: 1e100,
+    inbounds: [null], counters: [null],
+  }, false, {authorization:`Bearer ${agent.data.agent_token}`});
+  assert.strictEqual(unusual.status, 200, "invalid clock and null entries must not crash");
+
   await global.unload();
   assert(fs.existsSync(path.join(storage, "state.json")));
+  const saved = JSON.parse(fs.readFileSync(path.join(storage, "state.json"), "utf8"));
+  const node = saved.nodes[agent.data.node_id];
+  node.lastSeen = new Date(Date.now() - 120000).toISOString();
+  node.inbounds = [{port:55101, type:"shadowsocks", tag:"test", users:[]}];
+  node.current = {55101:{port:55101, uploadRate:500, downloadRate:800}};
+  fs.writeFileSync(path.join(storage, "state.json"), JSON.stringify(saved));
+  await global.load();
+  const offline = await call("GET", "/api/sbmonitor/v1/admin/state", undefined, true);
+  assert.strictEqual(offline.data.nodes[0].online, false);
+  assert.strictEqual(offline.data.nodes[0].ports[0].downloadRate, 0);
+  assert(!JSON.stringify(offline.data).includes(agent.data.agent_token));
+  assert(!JSON.stringify(offline.data).includes(node.agentTokenHash));
+  await global.unload();
+  fs.writeFileSync(path.join(storage, "state.json"), "{broken");
+  await assert.rejects(global.load(), "corrupt state must not be silently reset");
+  assert.strictEqual(fs.readFileSync(path.join(storage, "state.json"), "utf8"), "{broken");
   fs.rmSync(storage, { recursive: true, force: true });
   console.log("plugin integration test: ok");
 })().catch((error) => {
