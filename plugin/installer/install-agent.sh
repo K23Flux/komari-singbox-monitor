@@ -4,15 +4,26 @@ set -euo pipefail
 SERVER=""
 TOKEN=""
 NAME=""
+UPDATE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --update) UPDATE=true; shift ;;
     --server) SERVER="${2:-}"; shift 2 ;;
     --token) TOKEN="${2:-}"; shift 2 ;;
     --name) NAME="${2:-}"; shift 2 ;;
     *) echo "未知参数：$1" >&2; exit 1 ;;
   esac
 done
+
+if [[ -f /etc/sb-agent/config.json && "$UPDATE" != true ]]; then
+  echo "Agent 已安装。升级请加 --update --server https://你的Komari域名；不会重置节点身份。" >&2
+  exit 1
+fi
+if [[ "$UPDATE" == true && ! -f /etc/sb-agent/config.json ]]; then
+  echo "没有现有 Agent 配置，不能执行升级。" >&2
+  exit 1
+fi
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo "请使用 root 用户运行安装命令。" >&2
@@ -31,15 +42,15 @@ if [[ -z "$SERVER" ]]; then
 fi
 SERVER="${SERVER%/}"
 
-if [[ -z "$TOKEN" ]]; then
+if [[ -z "$TOKEN" && "$UPDATE" != true ]]; then
   read -r -p "请输入一次性注册密钥：" TOKEN
 fi
 
-if [[ -z "$NAME" ]]; then
+if [[ -z "$NAME" && "$UPDATE" != true ]]; then
   read -r -p "请输入节点名称：" NAME
 fi
 
-if [[ -z "$SERVER" || -z "$TOKEN" || -z "$NAME" ]]; then
+if [[ -z "$SERVER" || ( "$UPDATE" != true && ( -z "$TOKEN" || -z "$NAME" ) ) ]]; then
   echo "Komari 地址、注册密钥和节点名称不能为空。" >&2
   exit 1
 fi
@@ -109,13 +120,20 @@ printf '%s\n' "$expected_line" > "${temporary_dir}/one-checksum.txt"
   sha256sum -c one-checksum.txt
 )
 
+if [[ "$UPDATE" == true ]]; then
+  cp -p /usr/local/bin/sb-agent "${temporary_dir}/previous-agent"
+  systemctl stop sb-agent.service
+fi
 install -m 0755 "${temporary_dir}/${binary_name}" /usr/local/bin/sb-agent
 mkdir -p /etc/sb-agent /var/lib/sb-agent
+chmod 0700 /etc/sb-agent /var/lib/sb-agent
 
+if [[ "$UPDATE" != true ]]; then
 /usr/local/bin/sb-agent init \
   --server "$SERVER" \
   --token "$TOKEN" \
   --name "$NAME"
+fi
 
 unit_file="$(mktemp)"
 printf '%s\n' \
@@ -129,7 +147,8 @@ printf '%s\n' \
   'ExecStart=/usr/local/bin/sb-agent run' \
   'Restart=always' \
   'RestartSec=5' \
-  'NoNewPrivileges=false' \
+  'NoNewPrivileges=true' \
+  'UMask=0077' \
   '' \
   '[Install]' \
   'WantedBy=multi-user.target' > "$unit_file"
@@ -149,6 +168,11 @@ if systemctl is-active --quiet sb-agent.service; then
   echo "查看状态：systemctl status sb-agent"
   echo "查看日志：journalctl -u sb-agent -f"
 else
+  if [[ "$UPDATE" == true ]]; then
+    install -m 0755 "${temporary_dir}/previous-agent" /usr/local/bin/sb-agent
+    systemctl restart sb-agent.service
+    echo "升级未通过启动检查，已恢复旧 Agent 二进制。" >&2
+  fi
   echo "sb-agent 启动失败，请运行以下命令查看原因：" >&2
   echo "journalctl -u sb-agent -n 100 --no-pager" >&2
   exit 1

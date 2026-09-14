@@ -41,7 +41,7 @@ function loadState() {
     state.daily = state.daily || {};
     state.events = Array.isArray(state.events) ? state.events : [];
   } catch (error) {
-    if (error && error.code !== "ENOENT") console.warn("读取状态失败:", error.message);
+    if (!error || error.code !== "ENOENT") throw error;
     state = freshState();
   }
 }
@@ -89,7 +89,9 @@ function fail(res, statusCode, message) {
 
 function parseBody(req, res) {
   try {
-    return JSON.parse(req.body || "{}");
+    const body = JSON.parse(req.body || "{}");
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("expected object");
+    return body;
   } catch (_error) {
     fail(res, 400, "请求内容不是有效 JSON");
     return null;
@@ -153,6 +155,7 @@ function portKey(value) {
 }
 
 function cleanInbound(item) {
+  if (!item || typeof item !== "object") return null;
   const port = Number(item && item.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
   const users = Array.isArray(item.users)
@@ -167,11 +170,12 @@ function cleanInbound(item) {
 }
 
 function cleanCounter(item) {
+  if (!item || typeof item !== "object") return null;
   const port = Number(item && item.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
   const safeNumber = (value) => {
     const number = Number(value);
-    return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
+    return Number.isSafeInteger(number) && number >= 0 ? number : 0;
   };
   return {
     port,
@@ -253,11 +257,13 @@ function reportAgent(req, res) {
   const body = parseBody(req, res);
   if (!body) return;
   const nodeId = cleanText(body.node_id, 100);
+  if (!/^[a-f0-9]{32}$/.test(nodeId)) return fail(res, 401, "Agent 身份验证失败");
   const node = state.nodes[nodeId];
   if (!node || sha256(bearerToken(req)) !== node.agentTokenHash) return fail(res, 401, "Agent 身份验证失败");
 
   const now = new Date().toISOString();
-  const timestamp = Number.isFinite(Number(body.timestamp)) ? new Date(Number(body.timestamp) * 1000).toISOString() : now;
+  // Receipt time is authoritative; an Agent clock must not create arbitrary daily buckets.
+  const timestamp = now;
   const inbounds = Array.isArray(body.inbounds) ? body.inbounds.map(cleanInbound).filter(Boolean) : [];
   const counters = Array.isArray(body.counters) ? body.counters.map(cleanCounter).filter(Boolean) : [];
 
@@ -274,7 +280,7 @@ function reportAgent(req, res) {
   const nextCurrent = {};
   for (const counter of counters) {
     const key = portKey(counter.port);
-    if (!key) continue;
+    if (!key || nextCurrent[key]) continue;
     const previous = node.lastTotals[key];
     if (previous) {
       addDailyTraffic(
@@ -303,6 +309,7 @@ function reportAgent(req, res) {
     if (state.events.length > MAX_EVENTS) state.events = state.events.slice(-MAX_EVENTS);
   }
 
+  persistState();
   sendJSON(res, { ok: true, server_time: now });
 }
 
@@ -341,8 +348,8 @@ function publicNode(node) {
         tag: inbound.tag,
         users: inbound.users,
         displayName: node.aliases && node.aliases[String(port)] || (inbound.users && inbound.users[0]) || inbound.tag || String(port),
-        uploadRate: current.uploadRate || 0,
-        downloadRate: current.downloadRate || 0,
+        uploadRate: online ? current.uploadRate || 0 : 0,
+        downloadRate: online ? current.downloadRate || 0 : 0,
         today,
         month,
       };
@@ -436,7 +443,7 @@ function appendHistory() {
   const now = new Date().toISOString();
   const day = dateKey(now);
   for (const node of Object.values(state.nodes)) {
-    if (!node.lastSeen) continue;
+    if (!node.lastSeen || Date.now() - new Date(node.lastSeen).getTime() > config.offlineSeconds * 1000) continue;
     const directory = path.join(HISTORY_DIR, node.id);
     fs.mkdirSync(directory, { recursive: true });
     const points = Object.values(node.current || {}).map((item) => ({

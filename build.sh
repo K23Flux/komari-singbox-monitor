@@ -45,6 +45,6 @@ cp "${project_dir}/README.md" "${project_dir}/LICENSE" "$staging/"
 cp "${agent_dir}/go.mod" "${agent_dir}/main.go" "${agent_dir}/main_test.go" "$staging/SOURCE/agent/"
 cp "${project_dir}/build.sh" "$staging/SOURCE/"
 (cd "$staging" && zip -q -r "$archive" .)
-sha256sum "$archive" > "${archive}.sha256"
+(cd "$dist_dir" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
 
 echo "完成：$archive"
