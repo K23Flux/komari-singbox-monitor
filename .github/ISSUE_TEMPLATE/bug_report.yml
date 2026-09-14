@@ -1,0 +1,32 @@
+name: Bug 报告
+description: 报告可复现的问题（请勿提交任何密钥）
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 请先删除日志中的密码、UUID、Token、私钥和服务器地址。
+  - type: input
+    id: versions
+    attributes:
+      label: 版本信息
+      description: Komari、插件、Sing-box 和系统版本
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏日志
+      render: shell
