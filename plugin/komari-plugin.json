@@ -10,7 +10,7 @@
   },
   "author": "K23Flux",
   "url": "https://github.com/K23Flux/komari-singbox-monitor",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "komari": ">=1.4.3",
   "entry": "script.js",
   "icon": "assets/icon.svg",
