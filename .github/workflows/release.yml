@@ -48,6 +48,8 @@ jobs:
             test "$GITHUB_REF_NAME" = "v$version"
           fi
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: First-install compatibility regression
+        run: node --test tests/first-install.test.js
       - name: Test and build
         run: bash build.sh
       - name: Verify downloadable checksum
@@ -64,5 +66,5 @@ jobs:
           fi
           gh release create "$RELEASE_TAG" dist/*.zip dist/*.sha256 \
             --target "$GITHUB_SHA" --title "Sing-box Monitor $RELEASE_TAG" \
-            --notes "首个测试版本。支持通用节点命名、端口流量和服务状态。自动构建通过不等同于真实 Komari 主机验收，请先在测试机器部署。" \
+            --notes "修复首次安装缺少 state.json 时的 GoError，并防止加载失败后覆盖原数据。自动构建通过不等同于真实 Komari 主机验收，请先在测试机器部署。" \
             --prerelease

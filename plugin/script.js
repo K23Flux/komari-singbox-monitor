@@ -14,6 +14,7 @@ const MAX_EVENTS = 500;
 
 let config = { timezoneOffset: 8, offlineSeconds: 60, historyDays: 30 };
 let state = freshState();
+let storageLoaded = false;
 
 function freshState() {
   return {
@@ -32,18 +33,24 @@ function ensureStorage() {
 }
 
 function loadState() {
+  storageLoaded = false;
   ensureStorage();
-  try {
+  // Komari fs can throw GoError without Node's ENOENT code.
+  // The parent exists; listing it distinguishes first install from read/corruption failures.
+  if (!fs.readdirSync(__storageDir__).includes("state.json")) {
+    state = freshState();
+  } else {
     const parsed = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-    state = Object.assign(freshState(), parsed || {});
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Invalid persisted state: expected an object");
+    }
+    state = Object.assign(freshState(), parsed);
     state.nodes = state.nodes || {};
     state.registrations = state.registrations || {};
     state.daily = state.daily || {};
     state.events = Array.isArray(state.events) ? state.events : [];
-  } catch (error) {
-    if (!error || error.code !== "ENOENT") throw error;
-    state = freshState();
   }
+  storageLoaded = true;
 }
 
 function persistState() {
@@ -374,7 +381,7 @@ function adminState(req, res) {
   const nodes = Object.values(state.nodes).map(publicNode).sort((a, b) => a.name.localeCompare(b.name));
   sendJSON(res, {
     ok: true,
-    version: "0.1.1",
+    version: "0.1.2",
     config,
     nodes,
     events: state.events.slice(-100).reverse().map(({ hash, ...event }) => event),
@@ -520,9 +527,9 @@ globalThis.load = async function load() {
   server.route("GET", `${API}/admin/history`, history);
   server.cron("@every 1m", appendHistory);
   server.cron("0 17 3 * * *", cleanupHistory);
-  console.log("Sing-box Monitor 0.1.1 已启动");
+  console.log("Sing-box Monitor 0.1.2 已启动");
 };
 
 globalThis.unload = function unload() {
-  persistState();
+  if (storageLoaded) persistState();
 };

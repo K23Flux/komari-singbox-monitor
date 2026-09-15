@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-15
+
+- Handle first installation without depending on Node ENOENT error codes in Komari.
+- Preserve unreadable/corrupt state and skip unload writes when state loading failed.
+- Add regression tests simulating GoError without a code property.
+
 ## [0.1.1] - 2026-09-14
 
 - Replace personal examples with fictional demo data and generic contributor attribution.
