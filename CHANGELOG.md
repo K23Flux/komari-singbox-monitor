@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-15
+
+- Recognize Komari's code-less `GoError` when `state.json` is absent on first install.
+- Apply the same missing-file handling when a node has no history file yet.
+
 ## [0.1.2] - 2026-09-15
 
 - Handle first installation without depending on Node ENOENT error codes in Komari.

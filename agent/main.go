@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	version        = "0.1.2"
+	version        = "0.1.3"
 	configFile     = "/etc/sb-agent/config.json"
 	stateFile      = "/var/lib/sb-agent/state.json"
 	singBoxConfig  = "/etc/sing-box/config.json"
