@@ -32,14 +32,17 @@ function ensureStorage() {
   fs.mkdirSync(HISTORY_DIR, { recursive: true });
 }
 
+function isNotFound(error) {
+  if (!error) return false;
+  if (error.code === "ENOENT") return true;
+  const message = String(error.message || error).toLowerCase();
+  return message.includes("no such file or directory") || message.includes("not found");
+}
+
 function loadState() {
   storageLoaded = false;
   ensureStorage();
-  // Komari fs can throw GoError without Node's ENOENT code.
-  // The parent exists; listing it distinguishes first install from read/corruption failures.
-  if (!fs.readdirSync(__storageDir__).includes("state.json")) {
-    state = freshState();
-  } else {
+  try {
     const parsed = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("Invalid persisted state: expected an object");
@@ -49,6 +52,11 @@ function loadState() {
     state.registrations = state.registrations || {};
     state.daily = state.daily || {};
     state.events = Array.isArray(state.events) ? state.events : [];
+  } catch (error) {
+    // Komari's Go-backed fs throws GoError without Node's error.code.
+    // Missing state is expected on first install; all other errors remain fatal.
+    if (!isNotFound(error)) throw error;
+    state = freshState();
   }
   storageLoaded = true;
 }
@@ -474,7 +482,7 @@ function history(req, res) {
   try {
     points = fs.readFileSync(filename, "utf8").split("\n").filter(Boolean).slice(-2000).map((line) => JSON.parse(line));
   } catch (error) {
-    if (!error || error.code !== "ENOENT") return fail(res, 500, "读取历史记录失败");
+    if (!isNotFound(error)) return fail(res, 500, "读取历史记录失败");
   }
   sendJSON(res, { ok: true, node_id: nodeId, date: day, points });
 }
@@ -527,7 +535,7 @@ globalThis.load = async function load() {
   server.route("GET", `${API}/admin/history`, history);
   server.cron("@every 1m", appendHistory);
   server.cron("0 17 3 * * *", cleanupHistory);
-  console.log("Sing-box Monitor 0.1.2 已启动");
+  console.log("Sing-box Monitor 0.1.3 已启动");
 };
 
 globalThis.unload = function unload() {

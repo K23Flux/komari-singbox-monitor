@@ -66,5 +66,5 @@ jobs:
           fi
           gh release create "$RELEASE_TAG" dist/*.zip dist/*.sha256 \
             --target "$GITHUB_SHA" --title "Sing-box Monitor $RELEASE_TAG" \
-            --notes "修复首次安装缺少 state.json 时的 GoError，并防止加载失败后覆盖原数据。自动构建通过不等同于真实 Komari 主机验收，请先在测试机器部署。" \
+            --notes "直接兼容 Komari 文件系统在缺少 state.json 时返回的无错误码 GoError，并防止加载失败后覆盖原数据。自动构建通过不等同于真实 Komari 主机验收，请先在测试机器部署。" \
             --prerelease

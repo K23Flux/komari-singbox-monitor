@@ -38,6 +38,14 @@ test('empty storage loads with Go-style missing-file errors, then persists and r
   await f.context.load();
 });
 
+test('first install attempts the state read and accepts Komari GoError', async t=>{
+  const f=sandbox(t);
+  await f.context.load();
+  assert.equal(f.writes(),0);
+  f.context.unload();
+  assert.equal(JSON.parse(fs.readFileSync(f.file,'utf8')).schema,1);
+});
+
 for(const content of ['{broken', 'null', '[]']) {
   test('invalid state is preserved, including unload after failed load: '+content, async t=>{
     const f=sandbox(t,content);
