@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	version        = "0.1.3"
+	version        = "0.2.0"
 	configFile     = "/etc/sb-agent/config.json"
 	stateFile      = "/var/lib/sb-agent/state.json"
 	singBoxConfig  = "/etc/sing-box/config.json"
@@ -67,10 +67,21 @@ type PortState struct {
 }
 
 type AgentState struct {
-	PortsHash   string               `json:"ports_hash"`
-	Ports       map[string]PortState `json:"ports"`
-	LastSample  time.Time            `json:"last_sample"`
-	LastLogUnix int64                `json:"last_log_unix"`
+	PortsHash        string               `json:"ports_hash"`
+	Ports            map[string]PortState `json:"ports"`
+	LastSample       time.Time            `json:"last_sample"`
+	LastLogUnix      int64                `json:"last_log_unix"`
+	LastActivityUnix int64                `json:"last_activity_unix"`
+}
+
+// InboundActivity summarises real inbound connections seen for one inbound tag
+// since the previous report. It is per-tag (not per-user): a tag that serves a
+// single user identifies that user, which is how per-user online detection works.
+type InboundActivity struct {
+	Tag            string `json:"tag"`
+	ConnCount      int    `json:"conn_count"`
+	LastActiveUnix int64  `json:"last_active_unix"`
+	LastSource     string `json:"last_source,omitempty"`
 }
 
 type ReportCounter struct {
@@ -104,9 +115,10 @@ type Report struct {
 	Arch         string          `json:"arch"`
 	AgentVersion string          `json:"agent_version"`
 	Singbox      SingboxStatus   `json:"singbox"`
-	Inbounds     []Inbound       `json:"inbounds"`
-	Counters     []ReportCounter `json:"counters"`
-	Events       []string        `json:"events,omitempty"`
+	Inbounds     []Inbound         `json:"inbounds"`
+	Counters     []ReportCounter   `json:"counters"`
+	Events       []string          `json:"events,omitempty"`
+	Activity     []InboundActivity `json:"activity,omitempty"`
 }
 
 type SingboxStatus struct {
@@ -364,6 +376,11 @@ func collectAndReport(cfg *Config, state *AgentState) error {
 		events = collectWarningLogs(cfg.ServiceName, state.LastLogUnix)
 	}
 
+	// Inbound connection activity is scanned every report so per-user online
+	// detection reacts within one interval instead of waiting on the 30s log cycle.
+	activity, activityUnix := collectInboundActivity(cfg.ServiceName, state.LastActivityUnix, inbounds)
+	state.LastActivityUnix = activityUnix
+
 	hostname, _ := os.Hostname()
 	report := Report{
 		NodeID:       cfg.NodeID,
@@ -378,6 +395,7 @@ func collectAndReport(cfg *Config, state *AgentState) error {
 		Inbounds: inbounds,
 		Counters: reportCounters(ports, state),
 		Events:   events,
+		Activity: activity,
 	}
 	var response apiResponse
 	if err := postJSON(cfg.Server+apiPrefix+"/agent/report", cfg.AgentToken, report, &response); err != nil {
@@ -655,6 +673,73 @@ func collectWarningLogs(service string, sinceUnix int64) []string {
 		result = append(result, line)
 	}
 	return result
+}
+
+// inboundConnRe matches sing-box INFO connection lines and captures the inbound
+// tag, the preposition (from = client source, to = destination on multiplex
+// inbounds), and the peer. Error lines ("process connection ... invalid request",
+// port-scan noise) never contain this phrase and are ignored.
+var inboundConnRe = regexp.MustCompile(`inbound/[a-zA-Z0-9_]+\[([a-zA-Z0-9_.\-]+)\]: inbound (?:multiplex )?connection (from|to) (\S+)`)
+
+func collectInboundActivity(service string, sinceUnix int64, inbounds []Inbound) ([]InboundActivity, int64) {
+	now := time.Now().Unix()
+	// First run or a long gap: only look at the recent window so we never replay
+	// the whole journal or invent a giant backlog of "connections".
+	if sinceUnix <= 0 || now-sinceUnix > 3600 {
+		sinceUnix = now - 15
+	}
+	tags := map[string]bool{}
+	for _, inbound := range inbounds {
+		if inbound.Tag != "" {
+			tags[inbound.Tag] = true
+		}
+	}
+	if len(tags) == 0 {
+		return nil, now
+	}
+	args := []string{"-u", service, "--since", "@" + strconv.FormatInt(sinceUnix, 10), "--no-pager", "-o", "cat", "-n", "10000"}
+	output, err := exec.Command("journalctl", args...).Output()
+	if err != nil {
+		return nil, sinceUnix // keep the cursor so the next scan retries this window
+	}
+	type accumulator struct {
+		count  int
+		source string
+	}
+	seen := map[string]*accumulator{}
+	for _, line := range strings.Split(string(output), "\n") {
+		if !strings.HasPrefix(line, "INFO") {
+			continue
+		}
+		match := inboundConnRe.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		tag := match[1]
+		if !tags[tag] {
+			continue
+		}
+		entry := seen[tag]
+		if entry == nil {
+			entry = &accumulator{}
+			seen[tag] = entry
+		}
+		entry.count++
+		if match[2] == "from" {
+			entry.source = match[3]
+		}
+	}
+	result := make([]InboundActivity, 0, len(seen))
+	for tag, entry := range seen {
+		result = append(result, InboundActivity{
+			Tag:            tag,
+			ConnCount:      entry.count,
+			LastActiveUnix: now,
+			LastSource:     entry.source,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Tag < result[j].Tag })
+	return result, now
 }
 
 func postJSON(endpoint, token string, input any, output any) error {

@@ -5,12 +5,12 @@
   },
   "short": "sbmonitor",
   "description": {
-    "zh-CN": "在 Komari 中集中查看多台服务器的 Sing-box 端口、流量、状态和异常日志。",
-    "en": "Monitor Sing-box ports, traffic, status, and warning logs across servers."
+    "zh-CN": "在 Komari 中集中查看多台服务器的 Sing-box 端口、流量、状态与异常日志，并可按入站为指定用户做上线/会话监控和 Telegram 通知。",
+    "en": "Monitor Sing-box ports, traffic, status and warning logs across servers, with per-inbound user online/session tracking and Telegram alerts."
   },
   "author": "K23Flux",
   "url": "https://github.com/K23Flux/komari-singbox-monitor",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "komari": ">=1.4.3",
   "entry": "script.js",
   "icon": "assets/icon.svg",
@@ -53,15 +53,90 @@
         },
         "type": "number",
         "default": 30
+      },
+      {
+        "key": "watch_rules",
+        "name": {
+          "zh-CN": "监控用户（入站 tag=显示名）",
+          "en": "Watched users (inbound tag=label)"
+        },
+        "type": "string",
+        "default": "",
+        "help": {
+          "zh-CN": "用逗号或换行分隔，例如 ss2022_wty=wty。只有列出的入站 tag 才会做上线/会话监控和通知。",
+          "en": "Comma or newline separated, e.g. ss2022_wty=wty. Only listed inbound tags get online tracking and alerts."
+        }
+      },
+      {
+        "key": "session_idle_seconds",
+        "name": {
+          "zh-CN": "会话空闲判定秒数",
+          "en": "Session idle timeout in seconds"
+        },
+        "type": "number",
+        "default": 300,
+        "help": {
+          "zh-CN": "无新连接超过该秒数即视为一次会话结束（下线）。",
+          "en": "A session ends when no new connections arrive within this many seconds."
+        }
+      },
+      {
+        "key": "tg_bot_token",
+        "name": {
+          "zh-CN": "Telegram Bot Token",
+          "en": "Telegram bot token"
+        },
+        "type": "string",
+        "default": "",
+        "help": {
+          "zh-CN": "找 @BotFather 创建 bot 获得。留空则不推送。",
+          "en": "From @BotFather. Leave empty to disable push."
+        }
+      },
+      {
+        "key": "tg_chat_id",
+        "name": {
+          "zh-CN": "Telegram Chat ID",
+          "en": "Telegram chat ID"
+        },
+        "type": "string",
+        "default": ""
+      },
+      {
+        "key": "notify_online",
+        "name": {
+          "zh-CN": "上线时推送",
+          "en": "Notify on online"
+        },
+        "type": "switch",
+        "default": true
+      },
+      {
+        "key": "notify_offline",
+        "name": {
+          "zh-CN": "下线时推送",
+          "en": "Notify on offline"
+        },
+        "type": "switch",
+        "default": true
       }
     ]
   },
   "pages": [
     {
+      "file": "watch.html",
+      "title": {
+        "zh-CN": "连接监控",
+        "en": "Connection Watch"
+      },
+      "icon": "assets/icon.svg",
+      "visibility": "admin"
+    },
+    {
       "file": "admin.html",
       "title": {
-        "zh-CN": "Sing-box 监控",
-        "en": "Sing-box Monitor"
+        "zh-CN": "Sing-box 流量",
+        "en": "Sing-box Traffic"
       },
       "icon": "assets/icon.svg",
       "visibility": "admin"

@@ -40,10 +40,16 @@ curl -fsSL https://你的Komari域名/api/sbmonitor/v1/install.sh | bash -s -- -
 升级保留节点身份和累计状态。启动检查失败会恢复旧 Agent 二进制；这不是完整的业务健康检查。不要重复执行首次注册命令。
 
 - 一个端口对应一个用户时，端口流量可近似视为该用户流量。
-- 多个用户共用一个端口时，V0.1 只能显示端口总流量，无法按用户拆分。
-- V0.1 不提供实时连接、目标域名排行或用户级 Statistics API 数据。
+- 多个用户共用一个端口时，流量只能显示端口总量，无法按用户拆分。要按用户做上线/会话监控，请给该用户单独的入站 tag，再在 `watch_rules` 里登记。
+- 用户上下线监控基于 journal 的连接日志（inbound tag 级别），要求 sing-box `log.level` 为 `info` 或更详细；尚不提供目标域名排行。
 - 只支持 systemd 系统，尚未支持 OpenRC、Docker 内单独运行的 Sing-box 等环境。
 - Sing-box 配置必须是标准 JSON，不支持 JSONC 注释。
+
+### 用户上线监控与 Telegram 通知（0.2.0）
+
+- 在插件配置的「监控用户」`watch_rules` 里按 `入站tag=显示名` 登记（逗号或换行分隔），例如 `ss2022_wty=wty`。只有被独立入站承载的用户才能被单独识别。
+- 管理后台「连接监控」页按用户展示各节点在线状态、本次会话时长、连接数、来源，以及上下线记录；复用 Komari 管理员登录，无需另设密码。
+- 填入 `tg_bot_token` 与 `tg_chat_id` 后，上线/下线会推送到 Telegram（可分别开关）。`session_idle_seconds` 控制多久无连接判定为一次会话结束。
 
 ## 工作方式
 

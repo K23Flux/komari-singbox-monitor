@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>连接监控</title>
+  <style>
+    :root{color-scheme:light;--bg:#f5f7fb;--card:#fff;--card2:#f8fafc;--text:#172033;--muted:#6b7280;--faint:#9aa4b5;--line:#e5e9f2;--blue:#2563eb;--green:#10b981;--amber:#f59e0b;--red:#ef4444;--accent:#0ea5a4;--shadow:0 8px 30px rgba(22,34,55,.06)}
+    html.dark{color-scheme:dark;--bg:#0e1420;--card:#151e2d;--card2:#101827;--text:#ecf2ff;--muted:#93a0b6;--faint:#5f6d84;--line:#273349;--blue:#60a5fa;--green:#34d399;--amber:#fbbf24;--red:#f87171;--accent:#2dd4bf;--shadow:0 10px 35px rgba(0,0,0,.22)}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,"JetBrains Mono",monospace}
+    .app{max-width:960px;margin:auto;padding:24px 16px}
+    .top{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+    .title h1{font-size:23px;margin:0 0 6px;line-height:1.2}
+    .title p{margin:0;color:var(--muted);font-size:13px}
+    .chips{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .chip{font-size:12px;padding:5px 10px;border-radius:20px;border:1px solid var(--line);background:var(--card);color:var(--muted)}
+    .chip.ok{color:var(--green);border-color:rgba(16,185,129,.35);background:rgba(16,185,129,.08)}
+    .chip.warn{color:var(--amber);border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.08)}
+    .error{padding:14px 16px;background:rgba(239,68,68,.1);color:var(--red);border:1px solid rgba(239,68,68,.25);border-radius:12px;margin-bottom:16px}
+    .notice{padding:14px 16px;background:var(--card);border:1px dashed var(--line);border-radius:12px;color:var(--muted);margin-bottom:16px}
+    .user{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);margin-bottom:16px;overflow:hidden}
+    .user-head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+    .user-head .name{font-size:16px;font-weight:680}
+    .user-head .tag{font-size:11px;color:var(--faint)}
+    .user-head .agg{margin-left:auto;font-size:12px;color:var(--muted)}
+    .node{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line)}
+    .node:last-child{border-bottom:0}
+    .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 10px;border-radius:20px;white-space:nowrap;flex-shrink:0;min-width:78px;justify-content:center}
+    .pill .d{width:7px;height:7px;border-radius:50%;background:currentColor}
+    .pill.on{color:var(--green);background:rgba(16,185,129,.12)}
+    .pill.idle{color:var(--muted);background:rgba(120,130,150,.12)}
+    .pill.down{color:var(--amber);background:rgba(245,158,11,.1)}
+    .pill.on .d{animation:pulse 2s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+    @media(prefers-reduced-motion:reduce){.pill.on .d{animation:none}}
+    .ninfo{min-width:0;flex:1}
+    .ninfo .nn{font-weight:600;font-size:14px}
+    .ninfo .nm{font-size:12px;color:var(--faint);margin-top:2px}
+    .nstats{display:flex;gap:18px;flex-shrink:0;text-align:right}
+    .nstats .k{font-size:10.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.4px}
+    .nstats .v{font-size:14px;margin-top:2px;font-variant-numeric:tabular-nums}
+    .panel{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;margin-top:20px}
+    .panel-head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}
+    .panel-head h2{font-size:15px;margin:0}
+    .panel-head span{font-size:12px;color:var(--faint)}
+    .events{max-height:420px;overflow:auto}
+    .ev{display:flex;align-items:baseline;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line)}
+    .ev:last-child{border-bottom:0}
+    .ev .t{font-size:12px;color:var(--faint);width:120px;flex-shrink:0;font-variant-numeric:tabular-nums}
+    .ev .k{font-size:12px;font-weight:700;width:54px;flex-shrink:0}
+    .ev .k.on{color:var(--green)} .ev .k.off{color:var(--muted)}
+    .ev .m{font-size:13px;min-width:0}
+    .ev .m .src{color:var(--faint);font-size:11.5px}
+    .empty{padding:40px 16px;text-align:center;color:var(--faint)}
+    .foot{color:var(--faint);font-size:11.5px;text-align:center;margin-top:18px}
+    @media(max-width:560px){.node{flex-wrap:wrap}.nstats{width:100%;justify-content:flex-start;text-align:left;gap:22px;padding-left:90px}.ev .t{width:100%}.ev{flex-wrap:wrap;gap:6px}}
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="top">
+      <div class="title">
+        <h1>连接监控</h1>
+        <p>按入站识别的用户上下线、会话与连接情况</p>
+      </div>
+      <div class="chips">
+        <span class="chip" id="tgChip">通知：加载中</span>
+        <span class="chip" id="updated">加载中</span>
+      </div>
+    </div>
+
+    <div id="errorBox"></div>
+    <div id="body"><div class="notice">正在读取监控数据……</div></div>
+
+    <section class="panel">
+      <div class="panel-head"><h2>上下线记录</h2><span>最近 120 条</span></div>
+      <div class="events" id="events"><div class="empty">暂无记录</div></div>
+    </section>
+
+    <div class="foot" id="foot"></div>
+  </main>
+
+  <script>
+    const API = "/api/sbmonitor/v1";
+    let serverNow = Date.now();
+    let tzOffset = 8;
+    let loading = false;
+
+    const $ = (s) => document.querySelector(s);
+    const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+    function localTime(iso){
+      if(!iso) return "—";
+      const d = new Date(new Date(iso).getTime() + tzOffset*3600000);
+      return d.toISOString().slice(5,19).replace("T"," ");
+    }
+    function dur(fromIso, toMs){
+      if(!fromIso) return "—";
+      let s = Math.max(0, Math.round((toMs - new Date(fromIso).getTime())/1000));
+      const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+      if(h) return `${h}h${m}m`;
+      if(m) return `${m}m`;
+      return `${s}s`;
+    }
+    function ago(iso, nowMs){
+      if(!iso) return "从未";
+      let s = Math.max(0, Math.round((nowMs - new Date(iso).getTime())/1000));
+      if(s < 60) return `${s}秒前`;
+      const m = Math.floor(s/60); if(m < 60) return `${m}分钟前`;
+      const h = Math.floor(m/60); if(h < 24) return `${h}小时前`;
+      return `${Math.floor(h/24)}天前`;
+    }
+
+    function syncTheme(){
+      try{
+        document.documentElement.classList.toggle("dark", window.parent.document.documentElement.classList.contains("dark"));
+        document.documentElement.lang = window.parent.document.documentElement.lang || "zh-CN";
+      }catch(_){}
+    }
+
+    async function request(path){
+      const res = await fetch(API + path, { credentials:"same-origin", headers:{ "Content-Type":"application/json" } });
+      const data = await res.json().catch(() => ({ ok:false, error:`HTTP ${res.status}` }));
+      if(!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    function render(data){
+      serverNow = data.server_time ? new Date(data.server_time).getTime() : Date.now();
+      tzOffset = Number(data.timezone_offset) || 0;
+
+      $("#tgChip").className = "chip " + (data.telegram_configured ? "ok" : "warn");
+      $("#tgChip").textContent = data.telegram_configured ? "Telegram：已配置" : "Telegram：未配置";
+      $("#updated").textContent = "更新于 " + new Date().toLocaleTimeString();
+
+      if(!data.rules || !data.rules.length){
+        $("#body").innerHTML = '<div class="notice">还没有配置监控用户。到插件配置里填写「监控用户」，格式 <span class="mono">入站tag=显示名</span>，例如 <span class="mono">ss2022_wty=wty</span>。</div>';
+      } else if(!data.watched || !data.watched.length){
+        $("#body").innerHTML = '<div class="notice">已配置监控用户，但还没在任何已上报的节点上发现对应入站。确认落地机已装 agent、且 sing-box 配置里有该入站 tag。</div>';
+      } else {
+        const groups = {};
+        for(const w of data.watched){ (groups[w.label] = groups[w.label] || []).push(w); }
+        $("#body").innerHTML = Object.keys(groups).sort().map((label) => {
+          const rows = groups[label];
+          const anyOnline = rows.some((r) => r.online);
+          const totalConn = rows.reduce((s,r) => s + (r.connTotal||0), 0);
+          const nodeRows = rows.map((r) => {
+            let pill, extraK, extraV;
+            if(r.online){
+              pill = '<span class="pill on"><span class="d"></span>在线</span>';
+              extraK = "本次会话"; extraV = dur(r.sessionStart, serverNow);
+            } else if(r.nodeOnline){
+              pill = '<span class="pill idle"><span class="d"></span>离线</span>';
+              extraK = "上次活跃"; extraV = ago(r.lastActive, serverNow);
+            } else {
+              pill = '<span class="pill down"><span class="d"></span>节点掉线</span>';
+              extraK = "上次活跃"; extraV = ago(r.lastActive, serverNow);
+            }
+            const src = r.lastSource ? esc(r.lastSource) : "—";
+            const conn = r.online ? (r.sessionConn||0) : (r.connTotal||0);
+            const connK = r.online ? "本次连接" : "累计连接";
+            return `<div class="node">
+              ${pill}
+              <div class="ninfo">
+                <div class="nn">${esc(r.nodeName || r.nodeId)}</div>
+                <div class="nm mono">${esc(r.tag)}${r.port ? " · :"+r.port : ""} · 来源 ${src}</div>
+              </div>
+              <div class="nstats">
+                <div><div class="k">${extraK}</div><div class="v">${extraV}</div></div>
+                <div><div class="k">${connK}</div><div class="v mono">${conn}</div></div>
+              </div>
+            </div>`;
+          }).join("");
+          return `<section class="user">
+            <div class="user-head">
+              <span class="pill ${anyOnline?"on":"idle"}"><span class="d"></span>${anyOnline?"在线":"离线"}</span>
+              <div><div class="name">${esc(label)}</div><div class="tag">${rows.length} 个入站</div></div>
+              <div class="agg mono">累计连接 ${totalConn}</div>
+            </div>
+            ${nodeRows}
+          </section>`;
+        }).join("");
+      }
+
+      const evs = data.events || [];
+      $("#events").innerHTML = evs.length ? evs.map((e) => {
+        const on = e.kind === "online";
+        const src = e.source ? ` <span class="src">来源 ${esc(e.source)}</span>` : "";
+        return `<div class="ev">
+          <span class="t">${localTime(e.time)}</span>
+          <span class="k ${on?"on":"off"}">${on?"● 上线":"○ 下线"}</span>
+          <span class="m"><b>${esc(e.label)}</b> · ${esc(e.nodeName || e.nodeId)}${src}</span>
+        </div>`;
+      }).join("") : '<div class="empty">暂无记录</div>';
+
+      $("#foot").textContent = `会话空闲 ${data.session_idle_seconds}s 判定下线 · 复用 Komari 管理员登录`;
+    }
+
+    async function refresh(){
+      if(loading) return;
+      loading = true;
+      try{
+        const data = await request("/admin/watch");
+        $("#errorBox").innerHTML = "";
+        render(data);
+      }catch(err){
+        $("#errorBox").innerHTML = `<div class="error">${esc(err.message)}。请确认已登录 Komari 管理后台。</div>`;
+      }finally{ loading = false; }
+    }
+
+    syncTheme();
+    try{ new MutationObserver(syncTheme).observe(window.parent.document.documentElement,{attributes:true,attributeFilter:["class","lang"]}); }catch(_){}
+    refresh(); setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
