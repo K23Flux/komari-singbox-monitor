@@ -538,13 +538,18 @@ function reportAgent(req, res) {
   }
 
   if (Array.isArray(body.activity)) {
+    const seen = [];
     for (const raw of body.activity.slice(0, 50)) {
       if (!raw || typeof raw !== "object") continue;
       const tag = cleanText(raw.tag, 100);
       const conn = Number(raw.conn_count);
       if (!tag || !Number.isFinite(conn)) continue;
-      handleActivity(node, tag, conn, cleanText(raw.last_source, 120), now);
+      const source = cleanText(raw.last_source, 120);
+      seen.push({ tag, conn, source });
+      handleActivity(node, tag, conn, source, now);
     }
+    // Diagnostic: last raw activity the agent reported, independent of watch_rules.
+    node.lastActivity = { at: now, items: seen };
   }
 
   persistState();
