@@ -11,18 +11,35 @@ const HISTORY_DIR = path.join(__storageDir__, "history");
 const INSTALLER_FILE = path.join(__dirname, "installer", "install-agent.sh");
 const UNINSTALLER_FILE = path.join(__dirname, "installer", "uninstall-agent.sh");
 const MAX_EVENTS = 500;
+const MAX_USER_EVENTS = 300;
+const MAX_PENDING = 100;
+const PLUGIN_VERSION = "0.2.0";
 
-let config = { timezoneOffset: 8, offlineSeconds: 60, historyDays: 30 };
+let config = {
+  timezoneOffset: 8,
+  offlineSeconds: 60,
+  historyDays: 30,
+  sessionIdleSeconds: 300,
+  watchRules: [],
+  tgBotToken: "",
+  tgChatId: "",
+  notifyOnline: true,
+  notifyOffline: true,
+};
 let state = freshState();
 let storageLoaded = false;
+let flushingTelegram = false;
 
 function freshState() {
   return {
-    schema: 1,
+    schema: 2,
     nodes: {},
     registrations: {},
     daily: {},
     events: [],
+    watch: {},
+    userEvents: [],
+    pending: [],
     updatedAt: new Date().toISOString(),
   };
 }
@@ -52,6 +69,9 @@ function loadState() {
     state.registrations = state.registrations || {};
     state.daily = state.daily || {};
     state.events = Array.isArray(state.events) ? state.events : [];
+    state.watch = state.watch && typeof state.watch === "object" ? state.watch : {};
+    state.userEvents = Array.isArray(state.userEvents) ? state.userEvents : [];
+    state.pending = Array.isArray(state.pending) ? state.pending : [];
   } catch (error) {
     // Komari's Go-backed fs throws GoError without Node's error.code.
     // Missing state is expected on first install; all other errors remain fatal.
@@ -75,12 +95,36 @@ function numberConfig(value, fallback, min, max) {
   return Math.min(max, Math.max(min, parsed));
 }
 
+// parseWatchRules turns a "tag=label, tag2=label2" (comma or newline separated)
+// string into [{tag, label}]. A bare "tag" uses the tag as its own label.
+function parseWatchRules(raw) {
+  const rules = [];
+  const seen = new Set();
+  for (const piece of String(raw || "").split(/[,\n]/)) {
+    const trimmed = piece.trim();
+    if (!trimmed) continue;
+    const index = trimmed.indexOf("=");
+    const tag = cleanText(index >= 0 ? trimmed.slice(0, index) : trimmed, 100).trim();
+    if (!tag || seen.has(tag)) continue;
+    const label = cleanName(index >= 0 ? trimmed.slice(index + 1) : tag) || tag;
+    seen.add(tag);
+    rules.push({ tag, label });
+  }
+  return rules;
+}
+
 async function loadConfig() {
   const saved = await server.getConfig();
   config = {
     timezoneOffset: numberConfig(saved.timezone_offset, 8, -12, 14),
     offlineSeconds: numberConfig(saved.offline_seconds, 60, 15, 3600),
     historyDays: numberConfig(saved.history_days, 30, 1, 365),
+    sessionIdleSeconds: numberConfig(saved.session_idle_seconds, 300, 30, 86400),
+    watchRules: parseWatchRules(saved.watch_rules),
+    tgBotToken: cleanText(saved.tg_bot_token, 100).trim(),
+    tgChatId: cleanText(saved.tg_chat_id, 60).trim(),
+    notifyOnline: saved.notify_online !== false,
+    notifyOffline: saved.notify_offline !== false,
   };
 }
 
@@ -225,6 +269,175 @@ function calculateDelta(current, previous) {
   return current;
 }
 
+// ---- Watched-user connection tracking (per inbound tag) --------------------
+
+function watchRuleFor(tag) {
+  return config.watchRules.find((rule) => rule.tag === tag) || null;
+}
+
+function watchKey(nodeId, tag) {
+  return `${nodeId}:${tag}`;
+}
+
+function pushUserEvent(kind, watch, nodeName, nowISO) {
+  state.userEvents.push({
+    id: randomToken(8),
+    kind,
+    label: watch.label,
+    tag: watch.tag,
+    nodeId: watch.nodeId,
+    nodeName: nodeName || "",
+    source: watch.lastSource || "",
+    time: nowISO,
+  });
+  if (state.userEvents.length > MAX_USER_EVENTS) {
+    state.userEvents = state.userEvents.slice(-MAX_USER_EVENTS);
+  }
+}
+
+// handleActivity advances the session state machine for one watched inbound tag.
+// Only real connections (conn > 0) count; the offline transition is time-based
+// and handled by checkOffline so a quiet session eventually closes.
+function handleActivity(node, tag, conn, source, nowISO) {
+  const rule = watchRuleFor(tag);
+  if (!rule || conn <= 0) return;
+  const key = watchKey(node.id, tag);
+  let watch = state.watch[key];
+  if (!watch) {
+    watch = state.watch[key] = {
+      nodeId: node.id,
+      tag,
+      online: false,
+      sessionStart: null,
+      sessionConn: 0,
+      lastActive: null,
+      lastSource: "",
+      connCount: 0,
+    };
+  }
+  watch.label = rule.label;
+  if (source) watch.lastSource = source;
+  watch.lastActive = nowISO;
+  watch.connCount += conn;
+  if (!watch.online) {
+    watch.online = true;
+    watch.sessionStart = nowISO;
+    watch.sessionConn = 0;
+    pushUserEvent("online", watch, node.name, nowISO);
+    if (config.notifyOnline) enqueueTelegram(formatOnline(watch, node.name, nowISO));
+  }
+  watch.sessionConn += conn;
+}
+
+// checkOffline closes sessions with no activity for sessionIdleSeconds.
+function checkOffline() {
+  const nowMs = Date.now();
+  let changed = false;
+  for (const watch of Object.values(state.watch)) {
+    if (!watch.online || !watch.lastActive) continue;
+    if (nowMs - new Date(watch.lastActive).getTime() <= config.sessionIdleSeconds * 1000) continue;
+    watch.online = false;
+    const nowISO = new Date().toISOString();
+    const node = state.nodes[watch.nodeId];
+    pushUserEvent("offline", watch, node && node.name, nowISO);
+    if (config.notifyOffline) enqueueTelegram(formatOffline(watch, node && node.name, nowISO));
+    changed = true;
+  }
+  if (changed) persistState();
+  runTelegramFlush();
+}
+
+function localTimeLabel(nowISO) {
+  const shifted = new Date(new Date(nowISO).getTime() + config.timezoneOffset * 3600000);
+  return shifted.toISOString().slice(11, 19);
+}
+
+function humanDuration(fromISO, toISO) {
+  const seconds = Math.max(0, Math.round((new Date(toISO).getTime() - new Date(fromISO).getTime()) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours > 0) return `${hours}h${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${seconds}s`;
+}
+
+function escapeHTML(value) {
+  return String(value || "").replace(/[&<>]/g, (ch) => (ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : "&gt;"));
+}
+
+function formatOnline(watch, nodeName, nowISO) {
+  const lines = [
+    `\u{1F7E2} <b>${escapeHTML(watch.label)} 上线</b>`,
+    `节点  ${escapeHTML(nodeName || watch.nodeId)}`,
+    `时间  ${localTimeLabel(nowISO)}`,
+  ];
+  if (watch.lastSource) lines.push(`来源  ${escapeHTML(watch.lastSource)}`);
+  return lines.join("\n");
+}
+
+function formatOffline(watch, nodeName, nowISO) {
+  const duration = watch.sessionStart ? humanDuration(watch.sessionStart, nowISO) : "?";
+  return [
+    `\u{26AA} <b>${escapeHTML(watch.label)} 下线</b>`,
+    `节点  ${escapeHTML(nodeName || watch.nodeId)}`,
+    `时间  ${localTimeLabel(nowISO)}`,
+    `本次会话  ${duration}`,
+  ].join("\n");
+}
+
+// ---- Telegram delivery -----------------------------------------------------
+// Events enqueue to a persisted queue; flushing is best-effort and retried by a
+// cron, so an outage or a request-handler that cannot await never drops alerts.
+
+function enqueueTelegram(text) {
+  state.pending.push({ text, at: new Date().toISOString() });
+  if (state.pending.length > MAX_PENDING) state.pending = state.pending.slice(-MAX_PENDING);
+}
+
+async function sendTelegramOnce(text) {
+  const url = `https://api.telegram.org/bot${config.tgBotToken}/sendMessage`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: config.tgChatId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return true;
+}
+
+async function flushTelegram() {
+  if (flushingTelegram) return;
+  if (!config.tgBotToken || !config.tgChatId) return;
+  if (!state.pending.length) return;
+  flushingTelegram = true;
+  try {
+    while (state.pending.length) {
+      const item = state.pending[0];
+      try {
+        await sendTelegramOnce(item.text);
+      } catch (error) {
+        console.warn("Telegram 推送失败，稍后重试:", error.message);
+        break;
+      }
+      state.pending.shift();
+      persistState();
+    }
+  } finally {
+    flushingTelegram = false;
+  }
+}
+
+function runTelegramFlush() {
+  Promise.resolve()
+    .then(flushTelegram)
+    .catch((error) => console.warn("Telegram flush 异常:", error && error.message));
+}
+
 function registerAgent(req, res) {
   const body = parseBody(req, res);
   if (!body) return;
@@ -324,8 +537,19 @@ function reportAgent(req, res) {
     if (state.events.length > MAX_EVENTS) state.events = state.events.slice(-MAX_EVENTS);
   }
 
+  if (Array.isArray(body.activity)) {
+    for (const raw of body.activity.slice(0, 50)) {
+      if (!raw || typeof raw !== "object") continue;
+      const tag = cleanText(raw.tag, 100);
+      const conn = Number(raw.conn_count);
+      if (!tag || !Number.isFinite(conn)) continue;
+      handleActivity(node, tag, conn, cleanText(raw.last_source, 120), now);
+    }
+  }
+
   persistState();
   sendJSON(res, { ok: true, server_time: now });
+  runTelegramFlush();
 }
 
 function portTraffic(nodeId, port, mode) {
@@ -389,10 +613,73 @@ function adminState(req, res) {
   const nodes = Object.values(state.nodes).map(publicNode).sort((a, b) => a.name.localeCompare(b.name));
   sendJSON(res, {
     ok: true,
-    version: "0.1.2",
+    version: PLUGIN_VERSION,
     config,
     nodes,
     events: state.events.slice(-100).reverse().map(({ hash, ...event }) => event),
+  });
+}
+
+// adminWatch powers the connection panel: one row per watched inbound tag per
+// node, seeded from reported inbounds so a watched user shows as offline even
+// before their first connection.
+function adminWatch(req, res) {
+  if (!requireAdmin(req, res)) return;
+  const nowMs = Date.now();
+  const rows = {};
+  for (const node of Object.values(state.nodes)) {
+    const nodeOnline = node.lastSeen && nowMs - new Date(node.lastSeen).getTime() <= config.offlineSeconds * 1000;
+    for (const inbound of node.inbounds || []) {
+      const rule = watchRuleFor(inbound.tag);
+      if (!rule) continue;
+      rows[watchKey(node.id, inbound.tag)] = {
+        label: rule.label,
+        tag: inbound.tag,
+        port: inbound.port,
+        nodeId: node.id,
+        nodeName: node.name,
+        nodeOnline: Boolean(nodeOnline),
+        online: false,
+        sessionStart: null,
+        sessionConn: 0,
+        lastActive: null,
+        lastSource: "",
+        connTotal: 0,
+      };
+    }
+  }
+  for (const [key, watch] of Object.entries(state.watch)) {
+    const node = state.nodes[watch.nodeId];
+    const base = rows[key] || {
+      label: watch.label,
+      tag: watch.tag,
+      port: null,
+      nodeId: watch.nodeId,
+      nodeName: (node && node.name) || "",
+      nodeOnline: false,
+    };
+    const idle = watch.lastActive ? nowMs - new Date(watch.lastActive).getTime() : Infinity;
+    base.online = Boolean(watch.online && idle <= config.sessionIdleSeconds * 1000);
+    base.sessionStart = base.online ? watch.sessionStart : null;
+    base.sessionConn = base.online ? watch.sessionConn || 0 : 0;
+    base.lastActive = watch.lastActive;
+    base.lastSource = watch.lastSource || "";
+    base.connTotal = watch.connCount || 0;
+    rows[key] = base;
+  }
+  const watched = Object.values(rows).sort(
+    (a, b) => (a.label || "").localeCompare(b.label || "") || (a.nodeName || "").localeCompare(b.nodeName || ""),
+  );
+  sendJSON(res, {
+    ok: true,
+    version: PLUGIN_VERSION,
+    server_time: new Date().toISOString(),
+    timezone_offset: config.timezoneOffset,
+    session_idle_seconds: config.sessionIdleSeconds,
+    telegram_configured: Boolean(config.tgBotToken && config.tgChatId),
+    rules: config.watchRules,
+    watched,
+    events: state.userEvents.slice(-120).reverse(),
   });
 }
 
@@ -450,6 +737,10 @@ function deleteNode(req, res) {
     if (state.daily[day]) delete state.daily[day][nodeId];
   }
   state.events = state.events.filter((event) => event.nodeId !== nodeId);
+  state.userEvents = state.userEvents.filter((event) => event.nodeId !== nodeId);
+  for (const key of Object.keys(state.watch)) {
+    if (state.watch[key].nodeId === nodeId) delete state.watch[key];
+  }
   persistState();
   sendJSON(res, { ok: true });
 }
@@ -528,14 +819,17 @@ globalThis.load = async function load() {
   server.route("POST", `${API}/agent/register`, registerAgent);
   server.route("POST", `${API}/agent/report`, reportAgent);
   server.route("GET", `${API}/admin/state`, adminState);
+  server.route("GET", `${API}/admin/watch`, adminWatch);
   server.route("POST", `${API}/admin/registration`, createRegistration);
   server.route("POST", `${API}/admin/node/rename`, renameNode);
   server.route("POST", `${API}/admin/node/alias`, setPortAlias);
   server.route("POST", `${API}/admin/node/delete`, deleteNode);
   server.route("GET", `${API}/admin/history`, history);
   server.cron("@every 1m", appendHistory);
+  server.cron("@every 30s", checkOffline);
+  server.cron("@every 20s", () => runTelegramFlush());
   server.cron("0 17 3 * * *", cleanupHistory);
-  console.log("Sing-box Monitor 0.1.3 已启动");
+  console.log(`Sing-box Monitor ${PLUGIN_VERSION} 已启动`);
 };
 
 globalThis.unload = function unload() {

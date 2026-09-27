@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-28
+
+新增：按入站的用户上线/会话监控与 Telegram 通知。
+
+- Agent 每次上报新增 `activity` 字段：扫描 systemd journal 的 INFO 连接行，按 inbound tag 汇总 `{连接数, 最后活跃时间, 来源}`，过滤端口扫描噪音（invalid request / bad header）。
+- 插件新增会话状态机：对配置里 `watch_rules` 指定的入站 tag 做上线/离线判定（空闲超时可配），产生上下线事件。
+- 插件通过 `fetch` 直连 Telegram Bot API 推送上下线通知（不依赖 Komari ≥1.6 的通知渠道）；采用持久化待发队列 + cron 重试，避免请求处理器无法 await 时漏发。
+- 新增管理页「连接监控」`watch.html` 与只读接口 `GET /api/sbmonitor/v1/admin/watch`：按用户分组展示各节点在线/会话时长/连接数/来源与上下线记录，复用 Komari 管理员登录鉴权。
+- 新增配置项：`watch_rules`、`session_idle_seconds`、`tg_bot_token`、`tg_chat_id`、`notify_online`、`notify_offline`。
+- 持久化状态 schema 升到 2（新增 `watch` / `userEvents` / `pending`，向后兼容旧状态文件）。
+
 ## [0.1.3] - 2026-09-15
 
 - Recognize Komari's code-less `GoError` when `state.json` is absent on first install.

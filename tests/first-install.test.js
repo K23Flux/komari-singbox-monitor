@@ -34,7 +34,7 @@ test('empty storage loads with Go-style missing-file errors, then persists and r
   const f=sandbox(t);
   await f.context.load();
   f.context.unload();
-  assert.equal(JSON.parse(fs.readFileSync(f.file,'utf8')).schema,1);
+  assert.equal(JSON.parse(fs.readFileSync(f.file,'utf8')).schema,2);
   await f.context.load();
 });
 
@@ -43,7 +43,7 @@ test('first install attempts the state read and accepts Komari GoError', async t
   await f.context.load();
   assert.equal(f.writes(),0);
   f.context.unload();
-  assert.equal(JSON.parse(fs.readFileSync(f.file,'utf8')).schema,1);
+  assert.equal(JSON.parse(fs.readFileSync(f.file,'utf8')).schema,2);
 });
 
 for(const content of ['{broken', 'null', '[]']) {
