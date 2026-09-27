@@ -675,11 +675,17 @@ func collectWarningLogs(service string, sinceUnix int64) []string {
 	return result
 }
 
-// inboundConnRe matches sing-box INFO connection lines and captures the inbound
-// tag, the preposition (from = client source, to = destination on multiplex
-// inbounds), and the peer. Error lines ("process connection ... invalid request",
-// port-scan noise) never contain this phrase and are ignored.
-var inboundConnRe = regexp.MustCompile(`inbound/[a-zA-Z0-9_]+\[([a-zA-Z0-9_.\-]+)\]: inbound (?:multiplex )?connection (from|to) (\S+)`)
+// sing-box writes ANSI colour codes to the journal (e.g. "\x1b[36mINFO\x1b[0m..."),
+// so lines are stripped before matching.
+var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// inboundConnRe matches sing-box INFO connection lines and captures: the inbound
+// tag, whether it is a multiplex line, the preposition (from = client accept,
+// to = routed destination) and the peer. An optional "[user] " between the tag
+// and "inbound connection" is tolerated (sing-box prints it on the "to" line).
+// Error lines ("process connection ... invalid request", port-scan noise) never
+// contain this phrase and are ignored.
+var inboundConnRe = regexp.MustCompile(`inbound/[a-zA-Z0-9_]+\[([a-zA-Z0-9_.\-]+)\]: (?:\[[^\]]*\] )?inbound (multiplex )?connection (from|to) (\S+)`)
 
 func collectInboundActivity(service string, sinceUnix int64, inbounds []Inbound) ([]InboundActivity, int64) {
 	now := time.Now().Unix()
@@ -707,7 +713,8 @@ func collectInboundActivity(service string, sinceUnix int64, inbounds []Inbound)
 		source string
 	}
 	seen := map[string]*accumulator{}
-	for _, line := range strings.Split(string(output), "\n") {
+	for _, raw := range strings.Split(string(output), "\n") {
+		line := ansiRe.ReplaceAllString(raw, "")
 		if !strings.HasPrefix(line, "INFO") {
 			continue
 		}
@@ -719,14 +726,22 @@ func collectInboundActivity(service string, sinceUnix int64, inbounds []Inbound)
 		if !tags[tag] {
 			continue
 		}
+		isMux := match[2] != ""
+		prep := match[3]
+		peer := match[4]
 		entry := seen[tag]
 		if entry == nil {
 			entry = &accumulator{}
 			seen[tag] = entry
 		}
-		entry.count++
-		if match[2] == "from" {
-			entry.source = match[3]
+		// One accept ("from") per non-mux connection; one "multiplex connection to"
+		// per mux stream. The plain non-mux "to" line pairs with a "from" and would
+		// double-count, so it only contributes the destination (reserved for later).
+		if prep == "from" || (prep == "to" && isMux) {
+			entry.count++
+		}
+		if prep == "from" {
+			entry.source = peer
 		}
 	}
 	result := make([]InboundActivity, 0, len(seen))
