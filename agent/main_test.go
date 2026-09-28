@@ -94,3 +94,52 @@ func TestUpdateTrafficCombinesTCPAndUDP(t *testing.T) {
 		t.Fatalf("unexpected totals: %#v", value)
 	}
 }
+
+func TestHostOnly(t *testing.T) {
+	cases := map[string]string{
+		"www.cloudflare.com:443":   "www.cloudflare.com",
+		"1.2.3.4:80":               "1.2.3.4",
+		"[2001:470:f912:6a::1]:443": "2001:470:f912:6a::1",
+		"pixiv.net":                "pixiv.net",
+	}
+	for in, want := range cases {
+		if got := hostOnly(in); got != want {
+			t.Errorf("hostOnly(%q)=%q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestIsHealthCheck(t *testing.T) {
+	probes := []string{"www.cloudflare.com", "cp.cloudflare.com", "www.gstatic.com", "captive.apple.com", "www.msftconnecttest.com"}
+	for _, h := range probes {
+		if !isHealthCheck(h) {
+			t.Errorf("isHealthCheck(%q) = false, want true", h)
+		}
+	}
+	real := []string{"www.pixiv.net", "i.instagram.com", "youtube.com", "example.com"}
+	for _, h := range real {
+		if isHealthCheck(h) {
+			t.Errorf("isHealthCheck(%q) = true, want false", h)
+		}
+	}
+}
+
+func TestInboundConnRe(t *testing.T) {
+	// "to" line with [user] and destination
+	line := "INFO[1] [2 0ms] inbound/shadowsocks[ss2022_wty]: [WTY] inbound connection to www.pixiv.net:443"
+	m := inboundConnRe.FindStringSubmatch(line)
+	if m == nil || m[1] != "ss2022_wty" || m[3] != "to" || m[4] != "www.pixiv.net:443" {
+		t.Fatalf("to-line parse failed: %#v", m)
+	}
+	// "from" line with source
+	line2 := "INFO[1] [2 0ms] inbound/shadowsocks[ss2022_wty]: inbound connection from 1.2.3.4:5555"
+	m2 := inboundConnRe.FindStringSubmatch(line2)
+	if m2 == nil || m2[3] != "from" || m2[4] != "1.2.3.4:5555" {
+		t.Fatalf("from-line parse failed: %#v", m2)
+	}
+	// error/scan line must NOT match
+	line3 := "ERROR[1] [2 0ms] inbound/shadowsocks[ss2022_wty]: process connection from 1.2.3.4:5: shadowsocks: bad header"
+	if inboundConnRe.FindStringSubmatch(line3) != nil {
+		t.Fatalf("scan/error line unexpectedly matched")
+	}
+}

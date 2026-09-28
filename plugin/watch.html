@@ -25,9 +25,13 @@
     .user-head .name{font-size:16px;font-weight:680}
     .user-head .tag{font-size:11px;color:var(--faint)}
     .user-head .agg{margin-left:auto;font-size:12px;color:var(--muted)}
-    .node{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line)}
-    .node:last-child{border-bottom:0}
+    .node-wrap{border-bottom:1px solid var(--line)}
+    .node-wrap:last-child{border-bottom:0}
+    .node{display:flex;align-items:center;gap:12px;padding:13px 16px}
     .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 10px;border-radius:20px;white-space:nowrap;flex-shrink:0;min-width:78px;justify-content:center}
+    .doms{display:flex;flex-wrap:wrap;gap:6px;padding:0 16px 13px 106px}
+    .dom{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--muted);background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:2px 8px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .empty-doms{color:var(--faint);font-size:12px;padding-left:106px}
     .pill .d{width:7px;height:7px;border-radius:50%;background:currentColor}
     .pill.on{color:var(--green);background:rgba(16,185,129,.12)}
     .pill.idle{color:var(--muted);background:rgba(120,130,150,.12)}
@@ -158,19 +162,25 @@
               pill = '<span class="pill down"><span class="d"></span>节点掉线</span>';
               extraK = "上次活跃"; extraV = ago(r.lastActive, serverNow);
             }
-            const src = r.lastSource ? esc(r.lastSource) : "—";
             const conn = r.online ? (r.sessionConn||0) : (r.connTotal||0);
             const connK = r.online ? "本次连接" : "累计连接";
-            return `<div class="node">
-              ${pill}
-              <div class="ninfo">
-                <div class="nn">${esc(r.nodeName || r.nodeId)}</div>
-                <div class="nm mono">${esc(r.tag)}${r.port ? " · :"+r.port : ""} · 来源 ${src}</div>
+            const doms = (r.domains||[]).slice(0,12);
+            const domsHtml = doms.length
+              ? `<div class="doms">${doms.map((d)=>`<span class="dom">${esc(d)}</span>`).join("")}</div>`
+              : `<div class="doms empty-doms">暂无真实访问（仅测速探测已被过滤）</div>`;
+            return `<div class="node-wrap">
+              <div class="node">
+                ${pill}
+                <div class="ninfo">
+                  <div class="nn">${esc(r.nodeName || r.nodeId)}</div>
+                  <div class="nm mono">${esc(r.tag)}${r.port ? " · :"+r.port : ""}</div>
+                </div>
+                <div class="nstats">
+                  <div><div class="k">${extraK}</div><div class="v">${extraV}</div></div>
+                  <div><div class="k">${connK}</div><div class="v mono">${conn}</div></div>
+                </div>
               </div>
-              <div class="nstats">
-                <div><div class="k">${extraK}</div><div class="v">${extraV}</div></div>
-                <div><div class="k">${connK}</div><div class="v mono">${conn}</div></div>
-              </div>
+              ${domsHtml}
             </div>`;
           }).join("");
           return `<section class="user">
@@ -187,11 +197,12 @@
       const evs = data.events || [];
       $("#events").innerHTML = evs.length ? evs.map((e) => {
         const on = e.kind === "online";
-        const src = e.source ? ` <span class="src">来源 ${esc(e.source)}</span>` : "";
+        const doms = (e.domains||[]).slice(0,4);
+        const extra = doms.length ? ` <span class="src">访问 ${esc(doms.join(", "))}</span>` : "";
         return `<div class="ev">
           <span class="t">${localTime(e.time)}</span>
           <span class="k ${on?"on":"off"}">${on?"● 上线":"○ 下线"}</span>
-          <span class="m"><b>${esc(e.label)}</b> · ${esc(e.nodeName || e.nodeId)}${src}</span>
+          <span class="m"><b>${esc(e.label)}</b> · ${esc(e.nodeName || e.nodeId)}${extra}</span>
         </div>`;
       }).join("") : '<div class="empty">暂无记录</div>';
 
