@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	version        = "0.2.0"
+	version        = "0.2.1"
 	configFile     = "/etc/sb-agent/config.json"
 	stateFile      = "/var/lib/sb-agent/state.json"
 	singBoxConfig  = "/etc/sing-box/config.json"
@@ -77,11 +77,16 @@ type AgentState struct {
 // InboundActivity summarises real inbound connections seen for one inbound tag
 // since the previous report. It is per-tag (not per-user): a tag that serves a
 // single user identifies that user, which is how per-user online detection works.
+// ConnCount counts only connections to real destinations; client latency/health
+// checks (e.g. to www.cloudflare.com) are excluded and reported as Probes so a
+// node that only gets health-checked does not look "online".
 type InboundActivity struct {
-	Tag            string `json:"tag"`
-	ConnCount      int    `json:"conn_count"`
-	LastActiveUnix int64  `json:"last_active_unix"`
-	LastSource     string `json:"last_source,omitempty"`
+	Tag            string   `json:"tag"`
+	ConnCount      int      `json:"conn_count"`
+	LastActiveUnix int64    `json:"last_active_unix"`
+	LastSource     string   `json:"last_source,omitempty"`
+	Domains        []string `json:"domains,omitempty"`
+	Probes         int      `json:"probes,omitempty"`
 }
 
 type ReportCounter struct {
@@ -687,6 +692,39 @@ var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 // contain this phrase and are ignored.
 var inboundConnRe = regexp.MustCompile(`inbound/[a-zA-Z0-9_]+\[([a-zA-Z0-9_.\-]+)\]: (?:\[[^\]]*\] )?inbound (multiplex )?connection (from|to) (\S+)`)
 
+// healthCheckHosts are common client latency/connectivity-probe targets. Traffic
+// to these is a node health check, not real browsing, so it must not mark a user
+// online. Matched by exact host or dot-suffix.
+var healthCheckHosts = []string{
+	"cloudflare.com", "cp.cloudflare.com", "gstatic.com", "connectivitycheck.gstatic.com",
+	"clients3.google.com", "clients4.google.com", "connectivitycheck.android.com",
+	"captive.apple.com", "www.apple.com", "detectportal.firefox.com",
+	"msftconnecttest.com", "msftncsi.com", "edge.microsoft.com",
+}
+
+func hostOnly(peer string) string {
+	// Strip the :port. IPv6 literals arrive as "[addr]:port".
+	if strings.HasPrefix(peer, "[") {
+		if end := strings.Index(peer, "]"); end > 0 {
+			return peer[1:end]
+		}
+	}
+	if i := strings.LastIndex(peer, ":"); i > 0 {
+		return peer[:i]
+	}
+	return peer
+}
+
+func isHealthCheck(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, h := range healthCheckHosts {
+		if host == h || strings.HasSuffix(host, "."+h) {
+			return true
+		}
+	}
+	return false
+}
+
 func collectInboundActivity(service string, sinceUnix int64, inbounds []Inbound) ([]InboundActivity, int64) {
 	now := time.Now().Unix()
 	// First run or a long gap: only look at the recent window so we never replay
@@ -709,8 +747,11 @@ func collectInboundActivity(service string, sinceUnix int64, inbounds []Inbound)
 		return nil, sinceUnix // keep the cursor so the next scan retries this window
 	}
 	type accumulator struct {
-		count  int
-		source string
+		count   int
+		probes  int
+		source  string
+		domains []string
+		domSeen map[string]bool
 	}
 	seen := map[string]*accumulator{}
 	for _, raw := range strings.Split(string(output), "\n") {
@@ -726,31 +767,44 @@ func collectInboundActivity(service string, sinceUnix int64, inbounds []Inbound)
 		if !tags[tag] {
 			continue
 		}
-		isMux := match[2] != ""
 		prep := match[3]
 		peer := match[4]
 		entry := seen[tag]
 		if entry == nil {
-			entry = &accumulator{}
+			entry = &accumulator{domSeen: map[string]bool{}}
 			seen[tag] = entry
 		}
-		// One accept ("from") per non-mux connection; one "multiplex connection to"
-		// per mux stream. The plain non-mux "to" line pairs with a "from" and would
-		// double-count, so it only contributes the destination (reserved for later).
-		if prep == "from" || (prep == "to" && isMux) {
-			entry.count++
-		}
 		if prep == "from" {
+			// Client accept: carries the source (behind a frontend this is the
+			// relay, not the user). The paired "to" line carries the destination
+			// and is what we count, so we don't count "from".
 			entry.source = peer
+			continue
+		}
+		// prep == "to": a routed destination.
+		host := hostOnly(peer)
+		if isHealthCheck(host) {
+			entry.probes++
+			continue
+		}
+		entry.count++
+		if !entry.domSeen[host] && len(entry.domains) < 30 {
+			entry.domSeen[host] = true
+			entry.domains = append(entry.domains, host)
 		}
 	}
 	result := make([]InboundActivity, 0, len(seen))
 	for tag, entry := range seen {
+		if entry.count == 0 && entry.probes == 0 {
+			continue
+		}
 		result = append(result, InboundActivity{
 			Tag:            tag,
 			ConnCount:      entry.count,
 			LastActiveUnix: now,
 			LastSource:     entry.source,
+			Domains:        entry.domains,
+			Probes:         entry.probes,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Tag < result[j].Tag })

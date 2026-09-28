@@ -136,7 +136,7 @@ async function call(method, routePath, body, admin = false, headers = {}) {
     singbox: { running: true, version: "sing-box version 1.14.1" },
     inbounds: [{ port: 30001, type: "shadowsocks", tag: "ss2022", users: ["demo-user-a"] }],
     counters: [{ port: 30001, upload_total: 1800, download_total: 3400, upload_rate: 90, download_rate: 180 }],
-    activity: [{ tag: "ss2022", conn_count: 5, last_active_unix: Math.floor(Date.now() / 1000), last_source: "203.0.113.7:51000" }],
+    activity: [{ tag: "ss2022", conn_count: 5, last_active_unix: Math.floor(Date.now() / 1000), last_source: "203.0.113.7:51000", domains: ["www.example.org", "img.example.net"], probes: 3 }],
   }, false, { authorization: `Bearer ${agent.data.agent_token}` });
   assert.strictEqual(watchReport.status, 200);
 
@@ -146,8 +146,10 @@ async function call(method, routePath, body, admin = false, headers = {}) {
   assert(watchedRow, "watched row for ss2022 expected");
   assert.strictEqual(watchedRow.label, "demo-user-a");
   assert.strictEqual(watchedRow.online, true, "user should be online after activity");
-  assert(watchedRow.lastSource.includes("203.0.113.7"), "source captured");
-  assert(watch.data.events.some((event) => event.kind === "online" && event.label === "demo-user-a"), "online event expected");
+  assert(watchedRow.domains.includes("www.example.org"), "real domain captured");
+  const onlineEvent = watch.data.events.find((event) => event.kind === "online" && event.label === "demo-user-a");
+  assert(onlineEvent, "online event expected");
+  assert(Array.isArray(onlineEvent.domains) && onlineEvent.domains.includes("img.example.net"), "event carries domains");
   const watchDenied = await call("GET", "/api/sbmonitor/v1/admin/watch", undefined, false);
   assert.strictEqual(watchDenied.status, 403, "watch endpoint must require admin");
 

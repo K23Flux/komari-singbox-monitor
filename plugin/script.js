@@ -13,7 +13,7 @@ const UNINSTALLER_FILE = path.join(__dirname, "installer", "uninstall-agent.sh")
 const MAX_EVENTS = 500;
 const MAX_USER_EVENTS = 300;
 const MAX_PENDING = 100;
-const PLUGIN_VERSION = "0.2.0";
+const PLUGIN_VERSION = "0.2.1";
 
 let config = {
   timezoneOffset: 8,
@@ -279,7 +279,7 @@ function watchKey(nodeId, tag) {
   return `${nodeId}:${tag}`;
 }
 
-function pushUserEvent(kind, watch, nodeName, nowISO) {
+function pushUserEvent(kind, watch, nodeName, nowISO, domains) {
   state.userEvents.push({
     id: randomToken(8),
     kind,
@@ -288,6 +288,7 @@ function pushUserEvent(kind, watch, nodeName, nowISO) {
     nodeId: watch.nodeId,
     nodeName: nodeName || "",
     source: watch.lastSource || "",
+    domains: Array.isArray(domains) ? domains.slice(0, 8) : [],
     time: nowISO,
   });
   if (state.userEvents.length > MAX_USER_EVENTS) {
@@ -296,9 +297,10 @@ function pushUserEvent(kind, watch, nodeName, nowISO) {
 }
 
 // handleActivity advances the session state machine for one watched inbound tag.
-// Only real connections (conn > 0) count; the offline transition is time-based
-// and handled by checkOffline so a quiet session eventually closes.
-function handleActivity(node, tag, conn, source, nowISO) {
+// Only real connections (conn > 0, health checks already excluded by the agent)
+// count; the offline transition is time-based and handled by checkOffline so a
+// quiet session eventually closes.
+function handleActivity(node, tag, conn, source, domains, nowISO) {
   const rule = watchRuleFor(tag);
   if (!rule || conn <= 0) return;
   const key = watchKey(node.id, tag);
@@ -313,18 +315,31 @@ function handleActivity(node, tag, conn, source, nowISO) {
       lastActive: null,
       lastSource: "",
       connCount: 0,
+      domains: [],
     };
   }
   watch.label = rule.label;
   if (source) watch.lastSource = source;
   watch.lastActive = nowISO;
   watch.connCount += conn;
+  if (!Array.isArray(watch.domains)) watch.domains = [];
+  const fresh = [];
+  for (const raw of Array.isArray(domains) ? domains : []) {
+    const host = cleanText(raw, 253).trim().toLowerCase();
+    if (!host) continue;
+    // keep most-recent-last, dedupe, cap at 60
+    const at = watch.domains.indexOf(host);
+    if (at >= 0) watch.domains.splice(at, 1);
+    watch.domains.push(host);
+    fresh.push(host);
+  }
+  if (watch.domains.length > 60) watch.domains = watch.domains.slice(-60);
   if (!watch.online) {
     watch.online = true;
     watch.sessionStart = nowISO;
     watch.sessionConn = 0;
-    pushUserEvent("online", watch, node.name, nowISO);
-    if (config.notifyOnline) enqueueTelegram(formatOnline(watch, node.name, nowISO));
+    pushUserEvent("online", watch, node.name, nowISO, fresh);
+    if (config.notifyOnline) enqueueTelegram(formatOnline(watch, node.name, nowISO, fresh));
   }
   watch.sessionConn += conn;
 }
@@ -339,7 +354,7 @@ function checkOffline() {
     watch.online = false;
     const nowISO = new Date().toISOString();
     const node = state.nodes[watch.nodeId];
-    pushUserEvent("offline", watch, node && node.name, nowISO);
+    pushUserEvent("offline", watch, node && node.name, nowISO, []);
     if (config.notifyOffline) enqueueTelegram(formatOffline(watch, node && node.name, nowISO));
     changed = true;
   }
@@ -365,13 +380,14 @@ function escapeHTML(value) {
   return String(value || "").replace(/[&<>]/g, (ch) => (ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : "&gt;"));
 }
 
-function formatOnline(watch, nodeName, nowISO) {
+function formatOnline(watch, nodeName, nowISO, domains) {
   const lines = [
     `\u{1F7E2} <b>${escapeHTML(watch.label)} 上线</b>`,
     `节点  ${escapeHTML(nodeName || watch.nodeId)}`,
     `时间  ${localTimeLabel(nowISO)}`,
   ];
-  if (watch.lastSource) lines.push(`来源  ${escapeHTML(watch.lastSource)}`);
+  const sample = (Array.isArray(domains) ? domains : []).slice(0, 3);
+  if (sample.length) lines.push(`访问  ${escapeHTML(sample.join(", "))}`);
   return lines.join("\n");
 }
 
@@ -545,8 +561,12 @@ function reportAgent(req, res) {
       const conn = Number(raw.conn_count);
       if (!tag || !Number.isFinite(conn)) continue;
       const source = cleanText(raw.last_source, 120);
-      seen.push({ tag, conn, source });
-      handleActivity(node, tag, conn, source, now);
+      const domains = Array.isArray(raw.domains)
+        ? raw.domains.map((d) => cleanText(d, 253)).filter(Boolean).slice(0, 50)
+        : [];
+      const probes = Number(raw.probes) || 0;
+      seen.push({ tag, conn, source, probes, domains: domains.length });
+      handleActivity(node, tag, conn, source, domains, now);
     }
     // Diagnostic: last raw activity the agent reported, independent of watch_rules.
     node.lastActivity = { at: now, items: seen };
@@ -650,6 +670,7 @@ function adminWatch(req, res) {
         lastActive: null,
         lastSource: "",
         connTotal: 0,
+        domains: [],
       };
     }
   }
@@ -670,6 +691,7 @@ function adminWatch(req, res) {
     base.lastActive = watch.lastActive;
     base.lastSource = watch.lastSource || "";
     base.connTotal = watch.connCount || 0;
+    base.domains = Array.isArray(watch.domains) ? watch.domains.slice(-20).reverse() : [];
     rows[key] = base;
   }
   const watched = Object.values(rows).sort(
