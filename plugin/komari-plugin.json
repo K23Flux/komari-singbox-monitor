@@ -10,7 +10,7 @@
   },
   "author": "K23Flux",
   "url": "https://github.com/K23Flux/komari-singbox-monitor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "komari": ">=1.4.3",
   "entry": "script.js",
   "icon": "assets/icon.svg",
@@ -76,8 +76,8 @@
         "type": "number",
         "default": 300,
         "help": {
-          "zh-CN": "仅用于 0.3.0 之前的探针或开了 multiplex 的入站：无新连接超过该秒数即视为下线。",
-          "en": "Only for agents before 0.3.0 or multiplex inbounds: a session ends when no new connections arrive within this many seconds."
+          "zh-CN": "仅用于 0.3.0 之前的探针、开了 multiplex 的入站，以及 Hysteria2 / TUIC 等基于 QUIC 的入站：无新连接超过该秒数即视为下线。",
+          "en": "Only for agents before 0.3.0, multiplex inbounds and QUIC-based inbounds (Hysteria2, TUIC): a session ends when no new connections arrive within this many seconds."
         }
       },
       {

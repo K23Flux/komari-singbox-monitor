@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	version        = "0.3.0"
+	version        = "0.3.1"
 	configFile     = "/etc/sb-agent/config.json"
 	stateFile      = "/var/lib/sb-agent/state.json"
 	singBoxConfig  = "/etc/sing-box/config.json"
@@ -54,8 +54,10 @@ type Inbound struct {
 	Type  string   `json:"type"`
 	Tag   string   `json:"tag"`
 	Users []string `json:"users"`
-	// Mux marks inbounds with multiplex enabled: one TCP socket then carries many
-	// streams, so per-connection liveness cannot be derived from sockets.
+	// Mux marks inbounds whose connections cannot be matched to kernel TCP
+	// sockets: multiplex (one socket carries many streams) and QUIC-based
+	// protocols such as hysteria2 (everything rides one UDP flow). For these the
+	// plugin falls back to the idle-timeout rule.
 	Mux bool `json:"-"`
 }
 
@@ -434,6 +436,16 @@ func collectAndReport(cfg *Config, state *AgentState) error {
 	return nil
 }
 
+// isQUICInbound reports whether an inbound type carries its traffic over QUIC
+// (UDP), so nothing shows up in /proc/net/tcp for it.
+func isQUICInbound(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "hysteria", "hysteria2", "tuic":
+		return true
+	}
+	return false
+}
+
 func parseSingboxConfig(filename string) ([]Inbound, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -467,7 +479,7 @@ func parseSingboxConfig(filename string) ([]Inbound, error) {
 				users = append(users, name)
 			}
 		}
-		result = append(result, Inbound{Port: item.ListenPort, Type: item.Type, Tag: item.Tag, Users: users, Mux: item.Multiplex.Enabled})
+		result = append(result, Inbound{Port: item.ListenPort, Type: item.Type, Tag: item.Tag, Users: users, Mux: item.Multiplex.Enabled || isQUICInbound(item.Type)})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Port < result[j].Port })
 	return result, nil

@@ -287,3 +287,27 @@ func TestCollectInboundActivityLiveSocket(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+func TestQUICInboundNotLiveTracked(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "config.json")
+	cfg := `{"inbounds":[{"type":"hysteria2","tag":"hy2_alice","listen_port":36981,"users":[{"name":"alice"}]},{"type":"shadowsocks","tag":"ss_alice","listen_port":36980}]}`
+	if err := os.WriteFile(file, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inbounds, err := parseSingboxConfig(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := map[string]bool{}
+	for _, inbound := range inbounds {
+		mux[inbound.Tag] = inbound.Mux
+	}
+	if len(inbounds) != 2 || !mux["hy2_alice"] || mux["ss_alice"] {
+		t.Fatalf("unexpected inbounds: %+v", inbounds)
+	}
+	line := "INFO[1] [77 0ms] inbound/hysteria2[hy2_alice]: [alice] inbound packet connection to www.example.org:443"
+	if m := inboundConnRe.FindStringSubmatch(line); m == nil || m[2] != "hy2_alice" {
+		t.Fatalf("hysteria2 packet line not matched: %v", m)
+	}
+}

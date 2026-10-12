@@ -13,7 +13,7 @@ const UNINSTALLER_FILE = path.join(__dirname, "installer", "uninstall-agent.sh")
 const MAX_EVENTS = 500;
 const MAX_USER_EVENTS = 300;
 const MAX_PENDING = 100;
-const PLUGIN_VERSION = "0.3.0";
+const PLUGIN_VERSION = "0.3.1";
 const MAX_SESSION_HOSTS = 200;
 const TG_CHUNK = 3500;
 // A watched session is only closed while its node's agent is still reporting.
