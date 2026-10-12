@@ -20,7 +20,7 @@ const mockServer = {
       timezone_offset: 8,
       offline_seconds: 60,
       history_days: 30,
-      watch_rules: "ss2022=demo-user-a",
+      watch_rules: "ss2022=demo-user-a,ss2022_wty=wty",
       session_idle_seconds: 300,
       tg_bot_token: "",
       tg_chat_id: "",
@@ -152,6 +152,104 @@ async function call(method, routePath, body, admin = false, headers = {}) {
   assert(Array.isArray(onlineEvent.domains) && onlineEvent.domains.includes("img.example.net"), "event carries domains");
   const watchDenied = await call("GET", "/api/sbmonitor/v1/admin/watch", undefined, false);
   assert.strictEqual(watchDenied.status, 403, "watch endpoint must require admin");
+
+  // --- live-connection tracking: real online / real offline ---
+  const RealDate = Date;
+  let clock = 0;
+  global.Date = class extends RealDate {
+    constructor(...args) { if (args.length) super(...args); else super(RealDate.now() + clock); }
+    static now() { return RealDate.now() + clock; }
+  };
+  const unixNow = () => Math.floor(Date.now() / 1000);
+  const liveReport = (activity) => call("POST", "/api/sbmonitor/v1/agent/report", {
+    node_id: agent.data.node_id,
+    timestamp: unixNow(),
+    singbox: { running: true, version: "sing-box version 1.14.1" },
+    inbounds: [
+      { port: 30001, type: "shadowsocks", tag: "ss2022", users: ["demo-user-a"] },
+      { port: 36980, type: "shadowsocks", tag: "ss2022_wty", users: ["WTY"] },
+    ],
+    counters: [],
+    activity,
+  }, false, { authorization: `Bearer ${agent.data.agent_token}` });
+  const wty = (fields) => [{ tag: "ss2022_wty", conn_count: 0, live: 0, live_tracked: true, ...fields }];
+  const watchData = async () => (await call("GET", "/api/sbmonitor/v1/admin/watch", undefined, true)).data;
+  const wtyRow = async () => (await watchData()).watched.find((row) => row.tag === "ss2022_wty");
+  const wtyEvents = async () => (await watchData()).events.filter((event) => event.label === "wty");
+  const checkOffline = crons.find((job) => job.handler.name === "checkOffline").handler;
+
+  // A lone short request (one connection, already closed) is never announced.
+  await liveReport(wty({ conn_count: 1, visits: [{ t: unixNow(), host: "ocsp.example.net" }] }));
+  assert.strictEqual((await wtyRow()).online, false, "a single short request is not online yet");
+  clock += 90000;
+  await liveReport([]);
+  checkOffline();
+  assert.strictEqual((await wtyEvents()).length, 0, "an unconfirmed blip produces no online/offline event");
+
+  // One connection that stays open is confirmed after online_confirm_seconds.
+  const sessionStartUnix = unixNow();
+  await liveReport(wty({ conn_count: 1, live: 1, visits: [{ t: sessionStartUnix, host: "video.example.org" }] }));
+  assert.strictEqual((await wtyRow()).online, false, "held connection is pending until confirmed");
+  clock += 20000;
+  await liveReport(wty({ live: 1 }));
+  assert.strictEqual((await wtyRow()).online, true, "a connection held past the confirm window is online");
+  let events = await wtyEvents();
+  assert.strictEqual(events.filter((event) => event.kind === "online").length, 1);
+  assert.strictEqual(RealDate.parse(events[0].time), sessionStartUnix * 1000, "online time is when the first connection was logged");
+
+  // A long stream over one open connection must not go offline, however long
+  // it runs without any new connection (this was the false 5-minute offline).
+  for (let i = 0; i < 6; i++) {
+    clock += 300000;
+    await liveReport(wty({ live: 1 }));
+    checkOffline();
+  }
+  assert.strictEqual((await wtyRow()).online, true, "open connection keeps the session online");
+
+  const lastVisitUnix = unixNow();
+  await liveReport(wty({ conn_count: 2, live: 2, visits: [
+    { t: lastVisitUnix, host: "video.example.org" },
+    { t: lastVisitUnix, host: "cdn.example.org" },
+  ] }));
+  const lastActiveMs = Date.now();
+
+  // Everything closes: still online inside the grace, offline after it.
+  clock += 30000;
+  await liveReport([]);
+  checkOffline();
+  assert.strictEqual((await wtyRow()).online, true, "inside the offline grace");
+  clock += 40000;
+  await liveReport([]);
+  checkOffline();
+  assert.strictEqual((await wtyRow()).online, false, "offline once nothing is open past the grace");
+  events = await wtyEvents();
+  const offlineEvent = events.find((event) => event.kind === "offline");
+  assert(offlineEvent, "offline event expected");
+  assert(Math.abs(RealDate.parse(offlineEvent.time) - lastActiveMs) < 2000, "offline time is the last active moment, not when the check ran");
+  assert.strictEqual(RealDate.parse(offlineEvent.sessionStart), sessionStartUnix * 1000);
+  assert.strictEqual(offlineEvent.sessionConn, 3);
+  assert.deepStrictEqual(offlineEvent.visits.map((visit) => [visit.host, visit.count]), [["video.example.org", 2], ["cdn.example.org", 1]]);
+  assert(!offlineEvent.visits.some((visit) => visit.host === "ocsp.example.net"), "the earlier blip is not part of this session");
+
+  const queued = JSON.parse(fs.readFileSync(path.join(storage, "state.json"), "utf8")).pending.map((item) => item.text);
+  const offlineText = queued.find((text) => text.includes("wty 下线"));
+  assert(offlineText, "offline Telegram message queued");
+  assert(/上线  \d\d:\d\d:\d\d/.test(offlineText) && /下线  \d\d:\d\d:\d\d/.test(offlineText), "offline message carries start and end time");
+  assert(offlineText.includes("时长  30m"), `duration excludes the grace: ${offlineText}`);
+  assert(/\d\d:\d\d:\d\d  video\.example\.org ×2（至 \d\d:\d\d:\d\d）/.test(offlineText), "visited domain with first/last time");
+  assert(/\d\d:\d\d:\d\d  cdn\.example\.org/.test(offlineText), "every visited domain is listed");
+
+  // The agent goes silent mid-session: do not guess offline while it is unknown.
+  await liveReport(wty({ conn_count: 2, live: 1, visits: [{ t: unixNow(), host: "video.example.org" }] }));
+  assert.strictEqual((await wtyRow()).online, true);
+  clock += 120000;
+  checkOffline();
+  assert.strictEqual((await wtyRow()).online, true, "silent agent: session is held, not closed");
+  clock += 600000;
+  checkOffline();
+  assert.strictEqual((await wtyRow()).online, false, "agent lost for good: session closed");
+  assert((await wtyEvents()).find((event) => event.kind === "offline" && event.note), "closed with a note");
+  global.Date = RealDate;
 
   await global.unload();
   assert(fs.existsSync(path.join(storage, "state.json")));

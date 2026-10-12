@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -27,7 +29,7 @@ import (
 )
 
 const (
-	version        = "0.2.1"
+	version        = "0.3.0"
 	configFile     = "/etc/sb-agent/config.json"
 	stateFile      = "/var/lib/sb-agent/state.json"
 	singBoxConfig  = "/etc/sing-box/config.json"
@@ -52,6 +54,9 @@ type Inbound struct {
 	Type  string   `json:"type"`
 	Tag   string   `json:"tag"`
 	Users []string `json:"users"`
+	// Mux marks inbounds with multiplex enabled: one TCP socket then carries many
+	// streams, so per-connection liveness cannot be derived from sockets.
+	Mux bool `json:"-"`
 }
 
 type DirectionState struct {
@@ -87,6 +92,19 @@ type InboundActivity struct {
 	LastSource     string   `json:"last_source,omitempty"`
 	Domains        []string `json:"domains,omitempty"`
 	Probes         int      `json:"probes,omitempty"`
+	// Live is the number of client TCP connections that are still established
+	// right now and were routed to a real (non health-check) destination.
+	// LiveTracked tells the plugin whether Live is meaningful for this tag.
+	Live        int     `json:"live"`
+	LiveTracked bool    `json:"live_tracked"`
+	Visits      []Visit `json:"visits,omitempty"`
+}
+
+// Visit is one real destination a watched inbound connected to, with the time
+// sing-box logged it.
+type Visit struct {
+	T    int64  `json:"t"`
+	Host string `json:"host"`
 }
 
 type ReportCounter struct {
@@ -114,12 +132,12 @@ type RegisterResponse struct {
 }
 
 type Report struct {
-	NodeID       string          `json:"node_id"`
-	Timestamp    int64           `json:"timestamp"`
-	Hostname     string          `json:"hostname"`
-	Arch         string          `json:"arch"`
-	AgentVersion string          `json:"agent_version"`
-	Singbox      SingboxStatus   `json:"singbox"`
+	NodeID       string            `json:"node_id"`
+	Timestamp    int64             `json:"timestamp"`
+	Hostname     string            `json:"hostname"`
+	Arch         string            `json:"arch"`
+	AgentVersion string            `json:"agent_version"`
+	Singbox      SingboxStatus     `json:"singbox"`
 	Inbounds     []Inbound         `json:"inbounds"`
 	Counters     []ReportCounter   `json:"counters"`
 	Events       []string          `json:"events,omitempty"`
@@ -409,6 +427,7 @@ func collectAndReport(cfg *Config, state *AgentState) error {
 	if !response.OK {
 		return errors.New(response.Error)
 	}
+	tracker.commit()
 	if state.LastLogUnix == 0 || now.Unix()-state.LastLogUnix >= 30 {
 		state.LastLogUnix = now.Unix() - 1
 	}
@@ -428,6 +447,9 @@ func parseSingboxConfig(filename string) ([]Inbound, error) {
 			Users      []struct {
 				Name string `json:"name"`
 			} `json:"users"`
+			Multiplex struct {
+				Enabled bool `json:"enabled"`
+			} `json:"multiplex"`
 		} `json:"inbounds"`
 	}
 	if err := json.Unmarshal(data, &root); err != nil {
@@ -445,7 +467,7 @@ func parseSingboxConfig(filename string) ([]Inbound, error) {
 				users = append(users, name)
 			}
 		}
-		result = append(result, Inbound{Port: item.ListenPort, Type: item.Type, Tag: item.Tag, Users: users})
+		result = append(result, Inbound{Port: item.ListenPort, Type: item.Type, Tag: item.Tag, Users: users, Mux: item.Multiplex.Enabled})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Port < result[j].Port })
 	return result, nil
@@ -684,13 +706,14 @@ func collectWarningLogs(service string, sinceUnix int64) []string {
 // so lines are stripped before matching.
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
-// inboundConnRe matches sing-box INFO connection lines and captures: the inbound
-// tag, whether it is a multiplex line, the preposition (from = client accept,
-// to = routed destination) and the peer. An optional "[user] " between the tag
-// and "inbound connection" is tolerated (sing-box prints it on the "to" line).
-// Error lines ("process connection ... invalid request", port-scan noise) never
-// contain this phrase and are ignored.
-var inboundConnRe = regexp.MustCompile(`inbound/[a-zA-Z0-9_]+\[([a-zA-Z0-9_.\-]+)\]: (?:\[[^\]]*\] )?inbound (multiplex )?connection (from|to) (\S+)`)
+// inboundConnRe matches sing-box INFO connection lines and captures: the
+// connection id, the inbound tag, the kind ("multiplex ", "packet " or empty for
+// a plain TCP connection), the preposition (from = client accept, to = routed
+// destination) and the peer. An optional "[user] " between the tag and "inbound
+// connection" is tolerated (sing-box prints it on the "to" line). Error lines
+// ("process connection ... invalid request", port-scan noise) never contain this
+// phrase and are ignored.
+var inboundConnRe = regexp.MustCompile(`\[(\d+) [^\]]*\] inbound/[a-zA-Z0-9_]+\[([a-zA-Z0-9_.\-]+)\]: (?:\[[^\]]*\] )?inbound (multiplex |packet )?connection (from|to) (\S+)`)
 
 // healthCheckHosts are common client latency/connectivity-probe targets. Traffic
 // to these is a node health check, not real browsing, so it must not mark a user
@@ -725,77 +748,319 @@ func isHealthCheck(host string) bool {
 	return false
 }
 
+// tagAccumulator collects what happened on one inbound tag since the last report
+// the server accepted.
+type tagAccumulator struct {
+	count   int
+	probes  int
+	source  string
+	domains []string
+	domSeen map[string]bool
+	visits  []Visit
+}
+
+// trackedConn is one accepted client TCP connection, keyed by the client
+// address sing-box logged, so it can be matched against the kernel socket table.
+type trackedConn struct {
+	id    string
+	tag   string
+	peer  string
+	start int64
+	real  bool // routed to a real (non health-check) destination
+}
+
+// connTracker joins the journal ("connection from <peer>" / "connection to
+// <dest>", linked by the connection id) with the established sockets on each
+// inbound port. That gives a true "is anything still connected" signal instead
+// of guessing from how long ago the last new connection was logged.
+type connTracker struct {
+	conns      map[string]*trackedConn // tag|peer
+	byID       map[string]*trackedConn
+	acc        map[string]*tagAccumulator
+	cursor     string
+	backfilled bool
+}
+
+func newConnTracker() *connTracker {
+	return &connTracker{
+		conns: map[string]*trackedConn{},
+		byID:  map[string]*trackedConn{},
+		acc:   map[string]*tagAccumulator{},
+	}
+}
+
+var tracker = newConnTracker()
+
+const (
+	maxVisitsPerReport = 500
+	backfillSeconds    = 12 * 3600
+	closedConnGrace    = 30
+)
+
+// commit drops the accumulated activity once the server has accepted a report.
+// Until then it keeps growing, so a failed upload never loses visits.
+func (t *connTracker) commit() {
+	t.acc = map[string]*tagAccumulator{}
+}
+
+func (t *connTracker) accumulator(tag string) *tagAccumulator {
+	entry := t.acc[tag]
+	if entry == nil {
+		entry = &tagAccumulator{domSeen: map[string]bool{}}
+		t.acc[tag] = entry
+	}
+	return entry
+}
+
+// parseJournalLine reads one `journalctl -o short-unix` line.
+func parseJournalLine(raw string) (ts int64, id, tag, kind, dir, peer string, ok bool) {
+	line := ansiRe.ReplaceAllString(raw, "")
+	space := strings.IndexByte(line, ' ')
+	if space <= 0 {
+		return
+	}
+	stamp, err := strconv.ParseFloat(line[:space], 64)
+	if err != nil {
+		return
+	}
+	colon := strings.Index(line, ": ")
+	if colon < 0 || !strings.HasPrefix(line[colon+2:], "INFO") {
+		return
+	}
+	match := inboundConnRe.FindStringSubmatch(line[colon+2:])
+	if match == nil {
+		return
+	}
+	return int64(stamp), match[1], match[2], strings.TrimSpace(match[3]), match[4], match[5], true
+}
+
+// handleLine feeds one parsed connection line into the tracker. record=false is
+// used when rebuilding the connection table after an agent restart: the
+// connections are learned, but nothing is reported as new activity.
+func (t *connTracker) handleLine(ts int64, id, tag, kind, dir, peer string, record bool) {
+	if dir == "from" {
+		if kind == "" {
+			key := tag + "|" + peer
+			if old := t.conns[key]; old != nil {
+				delete(t.byID, old.id)
+			}
+			conn := &trackedConn{id: id, tag: tag, peer: peer, start: ts}
+			t.conns[key] = conn
+			t.byID[id] = conn
+		}
+		if record {
+			// Behind a frontend this is the relay, not the user.
+			t.accumulator(tag).source = peer
+		}
+		return
+	}
+	host := hostOnly(peer)
+	probe := isHealthCheck(host)
+	if conn := t.byID[id]; conn != nil && kind == "" {
+		conn.real = !probe
+	}
+	if !record {
+		return
+	}
+	entry := t.accumulator(tag)
+	if probe {
+		entry.probes++
+		return
+	}
+	entry.count++
+	if !entry.domSeen[host] && len(entry.domains) < 30 {
+		entry.domSeen[host] = true
+		entry.domains = append(entry.domains, host)
+	}
+	if len(entry.visits) < maxVisitsPerReport {
+		entry.visits = append(entry.visits, Visit{T: ts, Host: host})
+	}
+}
+
+// scanJournal streams journalctl output line by line and returns the cursor of
+// the last entry shown (empty when nothing was shown).
+func scanJournal(service string, extra []string, handle func(raw string)) (string, error) {
+	args := append([]string{"-u", service, "--no-pager", "-o", "short-unix", "--show-cursor"}, extra...)
+	command := exec.Command("journalctl", args...)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	if err := command.Start(); err != nil {
+		return "", err
+	}
+	cursor := ""
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "-- cursor: ") {
+			cursor = strings.TrimSpace(strings.TrimPrefix(line, "-- cursor: "))
+			continue
+		}
+		handle(line)
+	}
+	if err := command.Wait(); err != nil {
+		return "", err
+	}
+	return cursor, scanner.Err()
+}
+
+// parseProcTCP adds the remote address of every ESTABLISHED socket whose local
+// port is watched. data is the content of /proc/net/tcp or /proc/net/tcp6.
+func parseProcTCP(data string, ports map[int]bool, out map[int]map[string]bool) {
+	for _, line := range strings.Split(data, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[3] != "01" {
+			continue
+		}
+		_, localPort, ok := parseProcAddr(fields[1])
+		if !ok || !ports[int(localPort)] {
+			continue
+		}
+		addr, remotePort, ok := parseProcAddr(fields[2])
+		if !ok {
+			continue
+		}
+		if out[int(localPort)] == nil {
+			out[int(localPort)] = map[string]bool{}
+		}
+		out[int(localPort)][netip.AddrPortFrom(addr, remotePort).String()] = true
+	}
+}
+
+// parseProcAddr decodes "HEXADDR:HEXPORT". The kernel prints the address as
+// 32-bit words in host byte order (little-endian on amd64/arm64).
+func parseProcAddr(value string) (netip.Addr, uint16, bool) {
+	colon := strings.LastIndexByte(value, ':')
+	if colon < 0 {
+		return netip.Addr{}, 0, false
+	}
+	port, err := strconv.ParseUint(value[colon+1:], 16, 16)
+	if err != nil {
+		return netip.Addr{}, 0, false
+	}
+	raw, err := hex.DecodeString(value[:colon])
+	if err != nil || (len(raw) != 4 && len(raw) != 16) {
+		return netip.Addr{}, 0, false
+	}
+	for i := 0; i+4 <= len(raw); i += 4 {
+		raw[i], raw[i+1], raw[i+2], raw[i+3] = raw[i+3], raw[i+2], raw[i+1], raw[i]
+	}
+	addr, ok := netip.AddrFromSlice(raw)
+	if !ok {
+		return netip.Addr{}, 0, false
+	}
+	return addr.Unmap(), uint16(port), true
+}
+
+// readEstablished returns the established client sockets per watched port.
+// ok=false means the socket table could not be read at all.
+func readEstablished(ports map[int]bool) (map[int]map[string]bool, bool) {
+	out := map[int]map[string]bool{}
+	ok := false
+	for _, name := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(name)
+		if err != nil {
+			continue
+		}
+		ok = true
+		parseProcTCP(string(data), ports, out)
+	}
+	return out, ok
+}
+
+// liveCounts counts, per tag, tracked connections to real destinations whose
+// socket is still established, and forgets connections that have closed.
+func (t *connTracker) liveCounts(established map[int]map[string]bool, portOf map[string]int, now int64) map[string]int {
+	live := map[string]int{}
+	for key, conn := range t.conns {
+		if established[portOf[conn.tag]][conn.peer] {
+			if conn.real {
+				live[conn.tag]++
+			}
+			continue
+		}
+		if now-conn.start > closedConnGrace {
+			delete(t.conns, key)
+			delete(t.byID, conn.id)
+		}
+	}
+	return live
+}
+
 func collectInboundActivity(service string, sinceUnix int64, inbounds []Inbound) ([]InboundActivity, int64) {
 	now := time.Now().Unix()
-	// First run or a long gap: only look at the recent window so we never replay
-	// the whole journal or invent a giant backlog of "connections".
-	if sinceUnix <= 0 || now-sinceUnix > 3600 {
-		sinceUnix = now - 15
-	}
 	tags := map[string]bool{}
+	portOf := map[string]int{}
+	muxOf := map[string]bool{}
+	ports := map[int]bool{}
 	for _, inbound := range inbounds {
 		if inbound.Tag != "" {
 			tags[inbound.Tag] = true
+			portOf[inbound.Tag] = inbound.Port
+			muxOf[inbound.Tag] = inbound.Mux
+			ports[inbound.Port] = true
 		}
 	}
 	if len(tags) == 0 {
 		return nil, now
 	}
-	args := []string{"-u", service, "--since", "@" + strconv.FormatInt(sinceUnix, 10), "--no-pager", "-o", "cat", "-n", "10000"}
-	output, err := exec.Command("journalctl", args...).Output()
+	t := tracker
+	established, procOK := readEstablished(ports)
+
+	// After a restart, relearn which destination each still-open socket belongs
+	// to, so a long-running connection is not forgotten.
+	if !t.backfilled {
+		t.backfilled = true
+		if procOK && len(established) > 0 {
+			_, _ = scanJournal(service, []string{"--since", "@" + strconv.FormatInt(now-backfillSeconds, 10)}, func(raw string) {
+				if ts, id, tag, kind, dir, peer, ok := parseJournalLine(raw); ok && tags[tag] {
+					t.handleLine(ts, id, tag, kind, dir, peer, false)
+				}
+			})
+		}
+	}
+
+	var extra []string
+	if t.cursor != "" {
+		extra = []string{"--after-cursor", t.cursor}
+	} else {
+		// First run or a long gap: only look at the recent window so we never
+		// replay the whole journal or invent a backlog of "connections".
+		if sinceUnix <= 0 || now-sinceUnix > 3600 {
+			sinceUnix = now - 15
+		}
+		extra = []string{"--since", "@" + strconv.FormatInt(sinceUnix, 10)}
+	}
+	cursor, err := scanJournal(service, extra, func(raw string) {
+		if ts, id, tag, kind, dir, peer, ok := parseJournalLine(raw); ok && tags[tag] {
+			t.handleLine(ts, id, tag, kind, dir, peer, true)
+		}
+	})
+	nextSince := now
 	if err != nil {
-		return nil, sinceUnix // keep the cursor so the next scan retries this window
+		// A stale cursor (journal rotated) fails here; fall back to --since.
+		t.cursor = ""
+		nextSince = sinceUnix
+	} else if cursor != "" {
+		t.cursor = cursor
+	} else if t.cursor == "" {
+		// Nothing logged in the window: pin the cursor to the newest entry so
+		// the next scan continues exactly after it instead of by wall clock.
+		if latest, latestErr := scanJournal(service, []string{"-n", "1"}, func(string) {}); latestErr == nil {
+			t.cursor = latest
+		}
 	}
-	type accumulator struct {
-		count   int
-		probes  int
-		source  string
-		domains []string
-		domSeen map[string]bool
-	}
-	seen := map[string]*accumulator{}
-	for _, raw := range strings.Split(string(output), "\n") {
-		line := ansiRe.ReplaceAllString(raw, "")
-		if !strings.HasPrefix(line, "INFO") {
-			continue
-		}
-		match := inboundConnRe.FindStringSubmatch(line)
-		if match == nil {
-			continue
-		}
-		tag := match[1]
-		if !tags[tag] {
-			continue
-		}
-		prep := match[3]
-		peer := match[4]
-		entry := seen[tag]
+
+	live := t.liveCounts(established, portOf, now)
+	result := make([]InboundActivity, 0, len(t.acc)+len(live))
+	for tag := range tags {
+		entry := t.acc[tag]
 		if entry == nil {
-			entry = &accumulator{domSeen: map[string]bool{}}
-			seen[tag] = entry
+			entry = &tagAccumulator{}
 		}
-		if prep == "from" {
-			// Client accept: carries the source (behind a frontend this is the
-			// relay, not the user). The paired "to" line carries the destination
-			// and is what we count, so we don't count "from".
-			entry.source = peer
-			continue
-		}
-		// prep == "to": a routed destination.
-		host := hostOnly(peer)
-		if isHealthCheck(host) {
-			entry.probes++
-			continue
-		}
-		entry.count++
-		if !entry.domSeen[host] && len(entry.domains) < 30 {
-			entry.domSeen[host] = true
-			entry.domains = append(entry.domains, host)
-		}
-	}
-	result := make([]InboundActivity, 0, len(seen))
-	for tag, entry := range seen {
-		if entry.count == 0 && entry.probes == 0 {
+		if entry.count == 0 && entry.probes == 0 && live[tag] == 0 {
 			continue
 		}
 		result = append(result, InboundActivity{
@@ -805,10 +1070,13 @@ func collectInboundActivity(service string, sinceUnix int64, inbounds []Inbound)
 			LastSource:     entry.source,
 			Domains:        entry.domains,
 			Probes:         entry.probes,
+			Live:           live[tag],
+			LiveTracked:    procOK && !muxOf[tag],
+			Visits:         entry.visits,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Tag < result[j].Tag })
-	return result, now
+	return result, nextSince
 }
 
 func postJSON(endpoint, token string, input any, output any) error {

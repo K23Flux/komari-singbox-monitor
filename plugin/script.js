@@ -13,13 +13,22 @@ const UNINSTALLER_FILE = path.join(__dirname, "installer", "uninstall-agent.sh")
 const MAX_EVENTS = 500;
 const MAX_USER_EVENTS = 300;
 const MAX_PENDING = 100;
-const PLUGIN_VERSION = "0.2.1";
+const PLUGIN_VERSION = "0.3.0";
+const MAX_SESSION_HOSTS = 200;
+const TG_CHUNK = 3500;
+// A watched session is only closed while its node's agent is still reporting.
+// If the agent goes quiet we cannot tell whether the user left, so wait; after
+// AGENT_LOST_MS the session is closed with a note.
+const AGENT_SILENT_MS = 30000;
+const AGENT_LOST_MS = 600000;
 
 let config = {
   timezoneOffset: 8,
   offlineSeconds: 60,
   historyDays: 30,
   sessionIdleSeconds: 300,
+  offlineGraceSeconds: 60,
+  onlineConfirmSeconds: 15,
   watchRules: [],
   tgBotToken: "",
   tgChatId: "",
@@ -120,6 +129,8 @@ async function loadConfig() {
     offlineSeconds: numberConfig(saved.offline_seconds, 60, 15, 3600),
     historyDays: numberConfig(saved.history_days, 30, 1, 365),
     sessionIdleSeconds: numberConfig(saved.session_idle_seconds, 300, 30, 86400),
+    offlineGraceSeconds: numberConfig(saved.offline_grace_seconds, 60, 10, 3600),
+    onlineConfirmSeconds: numberConfig(saved.online_confirm_seconds, 15, 0, 600),
     watchRules: parseWatchRules(saved.watch_rules),
     tgBotToken: cleanText(saved.tg_bot_token, 100).trim(),
     tgChatId: cleanText(saved.tg_chat_id, 60).trim(),
@@ -279,7 +290,7 @@ function watchKey(nodeId, tag) {
   return `${nodeId}:${tag}`;
 }
 
-function pushUserEvent(kind, watch, nodeName, nowISO, domains) {
+function pushUserEvent(kind, watch, nodeName, timeISO, domains, extra) {
   state.userEvents.push({
     id: randomToken(8),
     kind,
@@ -289,20 +300,52 @@ function pushUserEvent(kind, watch, nodeName, nowISO, domains) {
     nodeName: nodeName || "",
     source: watch.lastSource || "",
     domains: Array.isArray(domains) ? domains.slice(0, 8) : [],
-    time: nowISO,
+    time: timeISO,
+    ...(extra || {}),
   });
   if (state.userEvents.length > MAX_USER_EVENTS) {
     state.userEvents = state.userEvents.slice(-MAX_USER_EVENTS);
   }
 }
 
+// addVisit records one real destination in the current session, aggregated per
+// host: first time, last time and how many connections.
+function addVisit(watch, host, iso) {
+  let item = watch.visits.find((visit) => visit.host === host);
+  if (!item) {
+    if (watch.visits.length >= MAX_SESSION_HOSTS) {
+      watch.visitsDropped = (watch.visitsDropped || 0) + 1;
+      return;
+    }
+    item = { host, first: iso, last: iso, count: 0 };
+    watch.visits.push(item);
+  }
+  item.count += 1;
+  if (iso < item.first) item.first = iso;
+  if (iso > item.last) item.last = iso;
+}
+
+// sessionConfirmed decides when a tentative session is announced as "online".
+// A lone short request (an OCSP check, a background refresh while the phone is
+// locked) is not announced; a second real connection, or one connection that
+// stays open for onlineConfirmSeconds, is. Agents that cannot report live
+// connections keep the old behaviour: the first real connection is enough.
+function sessionConfirmed(watch, live, nowMs) {
+  if (!watch.liveTracked || config.onlineConfirmSeconds <= 0) return true;
+  if (watch.sessionConn >= 2) return true;
+  return live > 0 && nowMs - new Date(watch.sessionStart).getTime() >= config.onlineConfirmSeconds * 1000;
+}
+
 // handleActivity advances the session state machine for one watched inbound tag.
-// Only real connections (conn > 0, health checks already excluded by the agent)
-// count; the offline transition is time-based and handled by checkOffline so a
-// quiet session eventually closes.
-function handleActivity(node, tag, conn, source, domains, nowISO) {
+// A tag is active while the agent sees new real connections (conn > 0, health
+// checks already excluded) or connections that are still open (live > 0). The
+// offline transition is handled by checkOffline once nothing is left open.
+function handleActivity(node, tag, info, nowISO) {
   const rule = watchRuleFor(tag);
-  if (!rule || conn <= 0) return;
+  if (!rule) return;
+  const conn = Math.max(0, Math.floor(Number(info.conn) || 0));
+  const live = Math.max(0, Math.floor(Number(info.live) || 0));
+  if (conn <= 0 && live <= 0) return;
   const key = watchKey(node.id, tag);
   let watch = state.watch[key];
   if (!watch) {
@@ -319,52 +362,108 @@ function handleActivity(node, tag, conn, source, domains, nowISO) {
     };
   }
   watch.label = rule.label;
-  if (source) watch.lastSource = source;
+  if (info.source) watch.lastSource = info.source;
+  watch.liveTracked = Boolean(info.liveTracked);
+  watch.live = live;
   watch.lastActive = nowISO;
   watch.connCount += conn;
+
+  // Agents before 0.3.0 send bare domains without times.
+  let visits = Array.isArray(info.visits) ? info.visits : [];
+  if (!visits.length && Array.isArray(info.domains)) {
+    visits = info.domains.map((host) => ({ host, time: nowISO }));
+  }
   if (!Array.isArray(watch.domains)) watch.domains = [];
-  const fresh = [];
-  for (const raw of Array.isArray(domains) ? domains : []) {
-    const host = cleanText(raw, 253).trim().toLowerCase();
+  const cleaned = [];
+  for (const raw of visits) {
+    const host = cleanText(raw.host, 253).trim().toLowerCase();
     if (!host) continue;
-    // keep most-recent-last, dedupe, cap at 60
+    cleaned.push({ host, time: raw.time && raw.time <= nowISO ? raw.time : nowISO });
+    // rolling "recently visited" list for the panel: most-recent-last, deduped
     const at = watch.domains.indexOf(host);
     if (at >= 0) watch.domains.splice(at, 1);
     watch.domains.push(host);
-    fresh.push(host);
   }
   if (watch.domains.length > 60) watch.domains = watch.domains.slice(-60);
-  if (!watch.online) {
-    watch.online = true;
-    watch.sessionStart = nowISO;
+
+  if (!watch.online && !watch.pending) {
+    watch.pending = true;
+    watch.sessionStart = cleaned.reduce((first, visit) => (visit.time < first ? visit.time : first), nowISO);
     watch.sessionConn = 0;
-    pushUserEvent("online", watch, node.name, nowISO, fresh);
-    if (config.notifyOnline) enqueueTelegram(formatOnline(watch, node.name, nowISO, fresh));
+    watch.visits = [];
+    watch.visitsDropped = 0;
   }
+  if (!Array.isArray(watch.visits)) watch.visits = [];
+  for (const visit of cleaned) addVisit(watch, visit.host, visit.time);
   watch.sessionConn += conn;
+
+  if (watch.pending && sessionConfirmed(watch, live, new Date(nowISO).getTime())) {
+    watch.pending = false;
+    watch.online = true;
+    const hosts = watch.visits.map((visit) => visit.host);
+    pushUserEvent("online", watch, node.name, watch.sessionStart, hosts);
+    if (config.notifyOnline) enqueueTelegram(formatOnline(watch, node.name, hosts));
+  }
 }
 
-// checkOffline closes sessions with no activity for sessionIdleSeconds.
+// checkOffline closes a session once nothing has been open or newly connected
+// for offlineGraceSeconds (agents without live tracking: sessionIdleSeconds).
+// The session ends at the last moment it was seen active, not when the check
+// runs, so the reported duration does not include the waiting time.
 function checkOffline() {
   const nowMs = Date.now();
   let changed = false;
   for (const watch of Object.values(state.watch)) {
-    if (!watch.online || !watch.lastActive) continue;
-    if (nowMs - new Date(watch.lastActive).getTime() <= config.sessionIdleSeconds * 1000) continue;
-    watch.online = false;
-    const nowISO = new Date().toISOString();
+    if ((!watch.online && !watch.pending) || !watch.lastActive) continue;
+    const limitSeconds = watch.liveTracked ? config.offlineGraceSeconds : config.sessionIdleSeconds;
+    if (nowMs - new Date(watch.lastActive).getTime() <= limitSeconds * 1000) continue;
     const node = state.nodes[watch.nodeId];
-    pushUserEvent("offline", watch, node && node.name, nowISO, []);
-    if (config.notifyOffline) enqueueTelegram(formatOffline(watch, node && node.name, nowISO));
+    let note = "";
+    if (watch.liveTracked) {
+      const silentMs = node && node.lastSeen ? nowMs - new Date(node.lastSeen).getTime() : Infinity;
+      if (silentMs > AGENT_SILENT_MS) {
+        if (silentMs <= AGENT_LOST_MS) continue;
+        note = "探针失联，下线时间按最后一次上报计";
+      }
+    }
     changed = true;
+    watch.live = 0;
+    if (watch.pending) {
+      // Never confirmed (a lone short request): drop it without any alert.
+      watch.pending = false;
+      watch.visits = [];
+      continue;
+    }
+    watch.online = false;
+    const endISO = watch.lastActive;
+    const visits = sortedVisits(watch);
+    pushUserEvent("offline", watch, node && node.name, endISO, visits.map((visit) => visit.host), {
+      sessionStart: watch.sessionStart,
+      sessionConn: watch.sessionConn || 0,
+      visits: visits.slice(0, 60),
+      note,
+    });
+    if (config.notifyOffline) {
+      for (const text of formatOffline(watch, node && node.name, endISO, note)) enqueueTelegram(text);
+    }
   }
   if (changed) persistState();
   runTelegramFlush();
 }
 
-function localTimeLabel(nowISO) {
-  const shifted = new Date(new Date(nowISO).getTime() + config.timezoneOffset * 3600000);
-  return shifted.toISOString().slice(11, 19);
+function sortedVisits(watch) {
+  return (Array.isArray(watch.visits) ? watch.visits.slice() : []).sort((a, b) =>
+    a.first < b.first ? -1 : a.first > b.first ? 1 : 0,
+  );
+}
+
+function localTimeLabel(nowISO, withDate) {
+  const shifted = new Date(new Date(nowISO).getTime() + config.timezoneOffset * 3600000).toISOString();
+  return withDate ? `${shifted.slice(5, 10)} ${shifted.slice(11, 19)}` : shifted.slice(11, 19);
+}
+
+function localDay(nowISO) {
+  return new Date(new Date(nowISO).getTime() + config.timezoneOffset * 3600000).toISOString().slice(0, 10);
 }
 
 function humanDuration(fromISO, toISO) {
@@ -380,25 +479,52 @@ function escapeHTML(value) {
   return String(value || "").replace(/[&<>]/g, (ch) => (ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : "&gt;"));
 }
 
-function formatOnline(watch, nodeName, nowISO, domains) {
+function formatOnline(watch, nodeName, domains) {
   const lines = [
     `\u{1F7E2} <b>${escapeHTML(watch.label)} 上线</b>`,
     `节点  ${escapeHTML(nodeName || watch.nodeId)}`,
-    `时间  ${localTimeLabel(nowISO)}`,
+    `时间  ${localTimeLabel(watch.sessionStart)}`,
   ];
   const sample = (Array.isArray(domains) ? domains : []).slice(0, 3);
   if (sample.length) lines.push(`访问  ${escapeHTML(sample.join(", "))}`);
   return lines.join("\n");
 }
 
-function formatOffline(watch, nodeName, nowISO) {
-  const duration = watch.sessionStart ? humanDuration(watch.sessionStart, nowISO) : "?";
-  return [
-    `\u{26AA} <b>${escapeHTML(watch.label)} 下线</b>`,
+// formatOffline returns one or more Telegram messages: a summary followed by
+// every domain visited in the session with its time, split to stay under
+// Telegram's message size limit.
+function formatOffline(watch, nodeName, endISO, note) {
+  const start = watch.sessionStart || endISO;
+  const withDate = localDay(start) !== localDay(endISO);
+  const label = escapeHTML(watch.label);
+  const head = [
+    `\u{26AA} <b>${label} 下线</b>`,
     `节点  ${escapeHTML(nodeName || watch.nodeId)}`,
-    `时间  ${localTimeLabel(nowISO)}`,
-    `本次会话  ${duration}`,
-  ].join("\n");
+    `上线  ${localTimeLabel(start, withDate)}`,
+    `下线  ${localTimeLabel(endISO, withDate)}`,
+    `时长  ${humanDuration(start, endISO)}`,
+    `连接  ${watch.sessionConn || 0} 次`,
+  ];
+  if (note) head.push(`备注  ${escapeHTML(note)}`);
+  const visits = sortedVisits(watch);
+  const lines = visits.map((visit) => {
+    let line = `${localTimeLabel(visit.first, withDate)}  ${escapeHTML(visit.host)}`;
+    if (visit.count > 1) line += ` ×${visit.count}（至 ${localTimeLabel(visit.last, withDate)}）`;
+    return line;
+  });
+  if (watch.visitsDropped) lines.push(`另有 ${watch.visitsDropped} 次访问的域名超出上限未列出`);
+  head.push("", lines.length ? `<b>访问记录</b>（${visits.length} 个域名）` : "访问记录  无");
+  const messages = [];
+  let current = head.join("\n");
+  for (const line of lines) {
+    if (current.length + line.length + 1 > TG_CHUNK) {
+      messages.push(current);
+      current = `<b>${label} 访问记录（续）</b>`;
+    }
+    current += `\n${line}`;
+  }
+  messages.push(current);
+  return messages;
 }
 
 // ---- Telegram delivery -----------------------------------------------------
@@ -565,8 +691,20 @@ function reportAgent(req, res) {
         ? raw.domains.map((d) => cleanText(d, 253)).filter(Boolean).slice(0, 50)
         : [];
       const probes = Number(raw.probes) || 0;
-      seen.push({ tag, conn, source, probes, domains: domains.length });
-      handleActivity(node, tag, conn, source, domains, now);
+      const live = Number(raw.live) || 0;
+      const nowMs = new Date(now).getTime();
+      const visits = [];
+      for (const item of Array.isArray(raw.visits) ? raw.visits.slice(0, 500) : []) {
+        if (!item || typeof item !== "object") continue;
+        const host = cleanText(item.host, 253);
+        if (!host) continue;
+        // Trust the agent's log time only when it is plausible.
+        const at = Number(item.t) * 1000;
+        const plausible = Number.isFinite(at) && at <= nowMs + 60000 && at >= nowMs - 2 * 86400000;
+        visits.push({ host, time: plausible ? new Date(Math.min(at, nowMs)).toISOString() : now });
+      }
+      seen.push({ tag, conn, source, probes, live, domains: domains.length });
+      handleActivity(node, tag, { conn, live, liveTracked: raw.live_tracked === true, source, domains, visits }, now);
     }
     // Diagnostic: last raw activity the agent reported, independent of watch_rules.
     node.lastActivity = { at: now, items: seen };
@@ -684,8 +822,9 @@ function adminWatch(req, res) {
       nodeName: (node && node.name) || "",
       nodeOnline: false,
     };
-    const idle = watch.lastActive ? nowMs - new Date(watch.lastActive).getTime() : Infinity;
-    base.online = Boolean(watch.online && idle <= config.sessionIdleSeconds * 1000);
+    base.online = Boolean(watch.online);
+    base.live = watch.online || watch.pending ? watch.live || 0 : 0;
+    base.liveTracked = Boolean(watch.liveTracked);
     base.sessionStart = base.online ? watch.sessionStart : null;
     base.sessionConn = base.online ? watch.sessionConn || 0 : 0;
     base.lastActive = watch.lastActive;
@@ -703,6 +842,8 @@ function adminWatch(req, res) {
     server_time: new Date().toISOString(),
     timezone_offset: config.timezoneOffset,
     session_idle_seconds: config.sessionIdleSeconds,
+    offline_grace_seconds: config.offlineGraceSeconds,
+    online_confirm_seconds: config.onlineConfirmSeconds,
     telegram_configured: Boolean(config.tgBotToken && config.tgChatId),
     rules: config.watchRules,
     watched,
@@ -853,7 +994,7 @@ globalThis.load = async function load() {
   server.route("POST", `${API}/admin/node/delete`, deleteNode);
   server.route("GET", `${API}/admin/history`, history);
   server.cron("@every 1m", appendHistory);
-  server.cron("@every 30s", checkOffline);
+  server.cron("@every 10s", checkOffline);
   server.cron("@every 20s", () => runTelegramFlush());
   server.cron("0 17 3 * * *", cleanupHistory);
   console.log(`Sing-box Monitor ${PLUGIN_VERSION} 已启动`);

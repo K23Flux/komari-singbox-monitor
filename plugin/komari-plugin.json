@@ -10,7 +10,7 @@
   },
   "author": "K23Flux",
   "url": "https://github.com/K23Flux/komari-singbox-monitor",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "komari": ">=1.4.3",
   "entry": "script.js",
   "icon": "assets/icon.svg",
@@ -76,8 +76,34 @@
         "type": "number",
         "default": 300,
         "help": {
-          "zh-CN": "无新连接超过该秒数即视为一次会话结束（下线）。",
-          "en": "A session ends when no new connections arrive within this many seconds."
+          "zh-CN": "仅用于 0.3.0 之前的探针或开了 multiplex 的入站：无新连接超过该秒数即视为下线。",
+          "en": "Only for agents before 0.3.0 or multiplex inbounds: a session ends when no new connections arrive within this many seconds."
+        }
+      },
+      {
+        "key": "offline_grace_seconds",
+        "name": {
+          "zh-CN": "下线确认秒数",
+          "en": "Offline grace in seconds"
+        },
+        "type": "number",
+        "default": 60,
+        "help": {
+          "zh-CN": "所有连接都断开、且这段时间内没有新连接，才判定下线。下线时间按最后一条连接断开的时刻算。",
+          "en": "A session ends once every connection has closed and no new one appears within this many seconds. The end time is when the last connection closed."
+        }
+      },
+      {
+        "key": "online_confirm_seconds",
+        "name": {
+          "zh-CN": "上线确认秒数",
+          "en": "Online confirmation in seconds"
+        },
+        "type": "number",
+        "default": 15,
+        "help": {
+          "zh-CN": "出现第 2 条真实连接，或单条连接保持超过该秒数，才推送上线；只有一条转瞬即逝的后台请求不算上线。填 0 表示第一条真实连接就算上线。",
+          "en": "Online is announced on the second real connection, or when a single connection stays open this long. 0 announces on the first real connection."
         }
       },
       {

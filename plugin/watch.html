@@ -162,8 +162,8 @@
               pill = '<span class="pill down"><span class="d"></span>节点掉线</span>';
               extraK = "上次活跃"; extraV = ago(r.lastActive, serverNow);
             }
-            const conn = r.online ? (r.sessionConn||0) : (r.connTotal||0);
-            const connK = r.online ? "本次连接" : "累计连接";
+            const conn = r.online ? (r.liveTracked ? `${r.live||0} / ${r.sessionConn||0}` : (r.sessionConn||0)) : (r.connTotal||0);
+            const connK = r.online ? (r.liveTracked ? "在连 / 本次连接" : "本次连接") : "累计连接";
             const doms = (r.domains||[]).slice(0,12);
             const domsHtml = doms.length
               ? `<div class="doms">${doms.map((d)=>`<span class="dom">${esc(d)}</span>`).join("")}</div>`
@@ -198,7 +198,13 @@
       $("#events").innerHTML = evs.length ? evs.map((e) => {
         const on = e.kind === "online";
         const doms = (e.domains||[]).slice(0,4);
-        const extra = doms.length ? ` <span class="src">访问 ${esc(doms.join(", "))}</span>` : "";
+        let extra = "";
+        if(!on && e.sessionStart){
+          const n = (e.visits||[]).length;
+          extra = ` <span class="src">本次 ${dur(e.sessionStart, new Date(e.time).getTime())} · ${e.sessionConn||0} 次连接${n ? " · " + n + " 个域名：" + esc(doms.join(", ")) + (n > doms.length ? " 等" : "") : ""}</span>`;
+        } else if(doms.length){
+          extra = ` <span class="src">访问 ${esc(doms.join(", "))}</span>`;
+        }
         return `<div class="ev">
           <span class="t">${localTime(e.time)}</span>
           <span class="k ${on?"on":"off"}">${on?"● 上线":"○ 下线"}</span>
@@ -206,7 +212,7 @@
         </div>`;
       }).join("") : '<div class="empty">暂无记录</div>';
 
-      $("#foot").textContent = `会话空闲 ${data.session_idle_seconds}s 判定下线 · 复用 Komari 管理员登录`;
+      $("#foot").textContent = `连接全部断开 ${data.offline_grace_seconds}s 后判定下线（旧版探针：无新连接 ${data.session_idle_seconds}s） · 复用 Komari 管理员登录`;
     }
 
     async function refresh(){

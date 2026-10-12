@@ -49,7 +49,7 @@ curl -fsSL https://你的Komari域名/api/sbmonitor/v1/install.sh | bash -s -- -
 
 - 在插件配置的「监控用户」`watch_rules` 里按 `入站tag=显示名` 登记（逗号或换行分隔），例如 `ss2022_alice=alice`。只有被独立入站承载的用户才能被单独识别。
 - 管理后台「连接监控」页按用户展示各节点在线状态、本次会话时长、连接数、来源，以及上下线记录；复用 Komari 管理员登录，无需另设密码。
-- 填入 `tg_bot_token` 与 `tg_chat_id` 后，上线/下线会推送到 Telegram（可分别开关）。`session_idle_seconds` 控制多久无连接判定为一次会话结束。
+- 填入 `tg_bot_token` 与 `tg_chat_id` 后，上线/下线会推送到 Telegram（可分别开关）。上线以真实连接建立为准（`online_confirm_seconds`），下线以该入站上的连接全部断开为准（`offline_grace_seconds` 内没有新连接才确认）；下线通知会列出本次访问的全部域名和时间。开了 multiplex 的入站仍按 `session_idle_seconds`（多久无新连接）判定。
 
 ## 工作方式
 
