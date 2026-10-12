@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	version        = "0.3.1"
+	version        = "0.3.2"
 	configFile     = "/etc/sb-agent/config.json"
 	stateFile      = "/var/lib/sb-agent/state.json"
 	singBoxConfig  = "/etc/sing-box/config.json"
@@ -824,6 +824,8 @@ func (t *connTracker) accumulator(tag string) *tagAccumulator {
 	return entry
 }
 
+var singboxStampRe = regexp.MustCompile(`^[+-]\d{4} \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} `)
+
 // parseJournalLine reads one `journalctl -o short-unix` line.
 func parseJournalLine(raw string) (ts int64, id, tag, kind, dir, peer string, ok bool) {
 	line := ansiRe.ReplaceAllString(raw, "")
@@ -836,10 +838,16 @@ func parseJournalLine(raw string) (ts int64, id, tag, kind, dir, peer string, ok
 		return
 	}
 	colon := strings.Index(line, ": ")
-	if colon < 0 || !strings.HasPrefix(line[colon+2:], "INFO") {
+	if colon < 0 {
 		return
 	}
-	match := inboundConnRe.FindStringSubmatch(line[colon+2:])
+	// With log.timestamp enabled sing-box prefixes its own "+0900 2006-01-02
+	// 15:04:05 " before the level.
+	message := singboxStampRe.ReplaceAllString(line[colon+2:], "")
+	if !strings.HasPrefix(message, "INFO") {
+		return
+	}
+	match := inboundConnRe.FindStringSubmatch(message)
 	if match == nil {
 		return
 	}

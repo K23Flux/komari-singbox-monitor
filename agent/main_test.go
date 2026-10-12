@@ -311,3 +311,15 @@ func TestQUICInboundNotLiveTracked(t *testing.T) {
 		t.Fatalf("hysteria2 packet line not matched: %v", m)
 	}
 }
+
+func TestParseJournalLineWithSingboxTimestamp(t *testing.T) {
+	raw := "1760231917.123456 test sing-box[25718]: +0900 2026-10-12 10:18:37 \x1b[36mINFO\x1b[0m [467747243 0ms] inbound/hysteria2[hy2_alice]: [alice] inbound connection to example.org:443"
+	ts, id, tag, kind, dir, peer, ok := parseJournalLine(raw)
+	if !ok || ts != 1760231917 || id != "467747243" || tag != "hy2_alice" || kind != "" || dir != "to" || peer != "example.org:443" {
+		t.Fatalf("unexpected parse: %v %v %v %q %v %v %v", ts, id, tag, kind, dir, peer, ok)
+	}
+	plain := "1760231917.123456 host sing-box[1]: INFO[0001] [5 0ms] inbound/shadowsocks[ss_alice]: inbound connection from 1.2.3.4:5555"
+	if _, _, tag, _, dir, _, ok := parseJournalLine(plain); !ok || tag != "ss_alice" || dir != "from" {
+		t.Fatalf("plain line no longer parsed")
+	}
+}
